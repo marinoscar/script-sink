@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Outlook Calendar Export",
+  "description": "Schema for the JSON output produced by Export-OutlookCalendar.ps1. Contains calendar entries extracted from Outlook Desktop via COM automation, with sensitive information (body, attendees, organizer identity) excluded.",
+  "type": "object",
+  "required": ["exportDate", "rangeStart", "rangeEnd", "itemCount", "entries"],
+  "properties": {
+    "exportDate": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of when the export was generated."
+    },
+    "rangeStart": {
+      "type": "string",
+      "format": "date",
+      "description": "Start date of the export range (inclusive)."
+    },
+    "rangeEnd": {
+      "type": "string",
+      "format": "date",
+      "description": "End date of the export range (inclusive)."
+    },
+    "itemCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of calendar entries in this export."
+    },
+    "entries": {
+      "type": "array",
+      "description": "List of calendar entries within the export date range.",
+      "items": {
+        "$ref": "#/$defs/calendarEntry"
+      }
+    }
+  },
+  "$defs": {
+    "calendarEntry": {
+      "type": "object",
+      "required": [
+        "entryId",
+        "lastModified",
+        "subject",
+        "start",
+        "startTimeZone",
+        "end",
+        "endTimeZone",
+        "busyStatus",
+        "responseStatus",
+        "isAllDay",
+        "isRecurring"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string",
+          "description": "Outlook unique identifier for the calendar entry. Use as the sync key to match entries across exports."
+        },
+        "lastModified": {
+          "type": "string",
+          "format": "date-time",
+          "description": "UTC timestamp of the last modification to this entry. Use to detect updates since the previous export."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Title of the calendar entry. Defaults to '(No Subject)' if empty."
+        },
+        "start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Local start date-time of the entry (in the startTimeZone)."
+        },
+        "startTimeZone": {
+          "type": "string",
+          "description": "Windows timezone ID for the start time (e.g., 'Eastern Standard Time', 'Pacific Standard Time'). Falls back to system local timezone if unavailable."
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Local end date-time of the entry (in the endTimeZone)."
+        },
+        "endTimeZone": {
+          "type": "string",
+          "description": "Windows timezone ID for the end time. May differ from startTimeZone for cross-timezone events."
+        },
+        "location": {
+          "type": ["string", "null"],
+          "description": "Meeting location (room name, address, or meeting link). Null if not specified."
+        },
+        "organizerDomain": {
+          "type": ["string", "null"],
+          "description": "Email domain of the meeting organizer (e.g., 'google.com'). Only the domain is stored for privacy — no names or full email addresses. Null if the domain could not be resolved."
+        },
+        "busyStatus": {
+          "type": "string",
+          "enum": ["Free", "Tentative", "Busy", "OutOfOffice", "WorkingElsewhere"],
+          "description": "Show-as status of the calendar entry."
+        },
+        "responseStatus": {
+          "type": "string",
+          "enum": ["None", "Organized", "Tentative", "Accepted", "Declined", "NotResponded"],
+          "description": "Your response status for this meeting invitation."
+        },
+        "isAllDay": {
+          "type": "boolean",
+          "description": "True if this is an all-day event."
+        },
+        "isRecurring": {
+          "type": "boolean",
+          "description": "True if this entry is an occurrence of a recurring event."
+        },
+        "recurrencePattern": {
+          "oneOf": [
+            { "$ref": "#/$defs/recurrencePattern" },
+            { "type": "null" }
+          ],
+          "description": "Recurrence details for recurring events. Null for one-time events or if the pattern could not be read."
+        }
+      }
+    },
+    "recurrencePattern": {
+      "type": "object",
+      "required": ["type", "interval", "daysOfWeek", "dayOfMonth", "monthOfYear", "instance", "patternStart", "occurrences"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["Daily", "Weekly", "Monthly", "MonthlyNth", "Yearly", "YearlyNth"],
+          "description": "The recurrence frequency type."
+        },
+        "interval": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Interval between occurrences (e.g., 2 means every 2 weeks for a Weekly type)."
+        },
+        "daysOfWeek": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+          },
+          "description": "Days of the week the event occurs on (primarily for Weekly recurrences)."
+        },
+        "dayOfMonth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31,
+          "description": "Day of the month for Monthly/Yearly recurrences. 0 if not applicable."
+        },
+        "monthOfYear": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Month number (1-12) for Yearly recurrences. 0 if not applicable."
+        },
+        "instance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Week instance for MonthlyNth/YearlyNth patterns (1=first, 2=second, 3=third, 4=fourth, 5=last). 0 if not applicable."
+        },
+        "patternStart": {
+          "type": "string",
+          "format": "date",
+          "description": "Date the recurrence pattern begins."
+        },
+        "patternEnd": {
+          "type": ["string", "null"],
+          "format": "date",
+          "description": "Date the recurrence pattern ends. Null if the recurrence has no end date."
+        },
+        "occurrences": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of occurrences if bounded. 0 if unbounded (no end date)."
+        }
+      }
+    }
+  }
+}
