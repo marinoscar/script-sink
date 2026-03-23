@@ -1,0 +1,6 @@
+{
+  "daysBack": 15,
+  "daysForward": 90,
+  "outputPath": "./output/calendar-export.json",
+  "logPath": "./logs/"
+}

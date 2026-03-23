@@ -18,8 +18,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Node.js / TypeScript** — cross-platform tasks
 - **Python** — cross-platform tasks
 
+## Repository Structure
+
+All scripts live under `scripts/`, each in its own folder:
+
+```
+scripts/
+└── <script-name>/
+    ├── README.md       # Purpose, prerequisites, how to run, config reference
+    ├── config.json     # Optional configuration (script uses defaults if missing)
+    ├── output/         # Generated output files (gitignored)
+    ├── logs/           # Log files (gitignored)
+    └── <script files>
+```
+
+When adding a new script, create a new folder under `scripts/` following this pattern.
+
 ## Conventions
 
 - Scripts should be self-contained or clearly document their dependencies.
 - Include a brief comment header describing purpose, usage, and intended runtime (cron, scheduled task, agent).
+- Each script folder must include a README.md with prerequisites, usage instructions, and configuration reference.
 - Check for existing scripts before creating new ones to avoid duplication.
