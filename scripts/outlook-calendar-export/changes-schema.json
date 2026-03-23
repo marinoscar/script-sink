@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Outlook Calendar Changes",
+  "description": "Schema for the changes-only JSON output produced by Detect-CalendarChanges.ps1. Contains only new, modified, and deleted calendar entries since the previous run.",
+  "type": "object",
+  "required": ["detectedAt", "previousRunDate", "isFullRun", "summary", "changes"],
+  "properties": {
+    "detectedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of when the change detection was performed."
+    },
+    "previousRunDate": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "UTC timestamp of the previous successful run. Null on the first run."
+    },
+    "isFullRun": {
+      "type": "boolean",
+      "description": "True if this was a full run (no previous state existed). All entries will be reported as 'new'."
+    },
+    "summary": {
+      "type": "object",
+      "required": ["new", "modified", "deleted", "unchanged"],
+      "properties": {
+        "new": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of entries that are new since the last run."
+        },
+        "modified": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of entries that have been modified since the last run."
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of entries that existed in the previous run but are no longer present."
+        },
+        "unchanged": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of entries that have not changed since the last run."
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "List of changed entries. Empty if nothing has changed.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/newOrModifiedChange" },
+          { "$ref": "#/$defs/deletedChange" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "newOrModifiedChange": {
+      "type": "object",
+      "required": ["changeType", "entry"],
+      "properties": {
+        "changeType": {
+          "type": "string",
+          "enum": ["new", "modified"],
+          "description": "Type of change detected."
+        },
+        "entry": {
+          "type": "object",
+          "description": "The full calendar entry object (same schema as entries in calendar-export.json). See schema.json for field definitions."
+        }
+      }
+    },
+    "deletedChange": {
+      "type": "object",
+      "required": ["changeType", "entryId"],
+      "properties": {
+        "changeType": {
+          "type": "string",
+          "const": "deleted",
+          "description": "Indicates this entry was deleted (present in previous run but not in current export)."
+        },
+        "entryId": {
+          "type": "string",
+          "description": "The Outlook entryId of the deleted item."
+        },
+        "lastKnownSubject": {
+          "type": ["string", "null"],
+          "description": "The subject/title from the last time this entry was seen. Null if not available."
+        },
+        "lastKnownStart": {
+          "type": ["string", "null"],
+          "description": "The start date-time from the last time this entry was seen. Null if not available."
+        }
+      }
+    }
+  }
+}

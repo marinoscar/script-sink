@@ -75,19 +75,46 @@ The script will display verbose, step-by-step progress on screen and write a log
 
 Output is saved to `output\calendar-export.json` by default.
 
+### Step 5: Detect changes (incremental sync)
+
+After running the full export, run the change detection script:
+
+```powershell
+.\Detect-CalendarChanges.ps1
+```
+
+This will:
+- Load the export JSON and compare against the previous run
+- Output only new, modified, and deleted entries to `output\calendar-changes.json`
+- Save the current state to `output\last-run.json` for the next comparison
+- Append a row to `output\run-history.csv` (viewable in Excel, max 500 rows)
+- Write a log to `logs\changes-YYYYMMDD-HHmmss.log`
+
+On the first run (or if you delete `last-run.json`), all entries are reported as "new".
+
+To force a full run at any time:
+
+```powershell
+Remove-Item .\output\last-run.json
+.\Detect-CalendarChanges.ps1
+```
+
 ### CLI Parameter Examples
 
 Override any default or config.json value via CLI parameters:
 
 ```powershell
-# Export 30 days back and 120 days forward
+# Export: 30 days back and 120 days forward
 .\Export-OutlookCalendar.ps1 -DaysBack 30 -DaysForward 120
 
-# Custom output path
+# Export: custom output path
 .\Export-OutlookCalendar.ps1 -OutputPath "C:\Exports\my-calendar.json"
 
-# Use a different config file
+# Export: use a different config file
 .\Export-OutlookCalendar.ps1 -ConfigPath "C:\config\my-config.json"
+
+# Changes: custom paths
+.\Detect-CalendarChanges.ps1 -ExportPath "C:\Exports\my-calendar.json" -ChangesOutputPath "C:\Exports\changes.json"
 ```
 
 ## Configuration
@@ -96,12 +123,18 @@ Settings are resolved in this priority order: **CLI parameters > config.json > b
 
 The `config.json` file is optional. If not present, the script uses built-in defaults and logs a warning.
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `daysBack` | integer | `15` | Number of days in the past to include |
-| `daysForward` | integer | `90` | Number of days in the future to include |
-| `outputPath` | string | `./output/calendar-export.json` | Path for the JSON output file (relative to script dir, or absolute) |
-| `logPath` | string | `./logs/` | Directory for log files (relative to script dir, or absolute) |
+| Key | Type | Default | Used By | Description |
+|---|---|---|---|---|
+| `daysBack` | integer | `15` | Export | Number of days in the past to include |
+| `daysForward` | integer | `90` | Export | Number of days in the future to include |
+| `outputPath` | string | `./output/calendar-export.json` | Export | Path for the JSON export file |
+| `logPath` | string | `./logs/` | Both | Directory for log files |
+| `changesOutputPath` | string | `./output/calendar-changes.json` | Changes | Path for the changes-only JSON |
+| `lastRunPath` | string | `./output/last-run.json` | Changes | Path to the last-run state file (delete to force full run) |
+| `runHistoryPath` | string | `./output/run-history.csv` | Changes | Path to the run history CSV |
+| `runHistoryMaxRows` | integer | `500` | Changes | Maximum rows to keep in the run history CSV |
+
+All paths can be relative (resolved against the script directory) or absolute.
 
 Example `config.json`:
 
@@ -110,7 +143,11 @@ Example `config.json`:
   "daysBack": 15,
   "daysForward": 90,
   "outputPath": "./output/calendar-export.json",
-  "logPath": "./logs/"
+  "logPath": "./logs/",
+  "changesOutputPath": "./output/calendar-changes.json",
+  "lastRunPath": "./output/last-run.json",
+  "runHistoryPath": "./output/run-history.csv",
+  "runHistoryMaxRows": 500
 }
 ```
 
@@ -190,15 +227,73 @@ The exported JSON has this structure:
 | `patternEnd` | Date the recurrence pattern ends (null if no end date) |
 | `occurrences` | Total occurrences if bounded (0 if unbounded) |
 
+## Changes Output Format
+
+The `Detect-CalendarChanges.ps1` script outputs a changes-only JSON (`calendar-changes.json`):
+
+```json
+{
+  "detectedAt": "2026-03-24T10:05:00Z",
+  "previousRunDate": "2026-03-24T10:00:00Z",
+  "isFullRun": false,
+  "summary": { "new": 2, "modified": 3, "deleted": 1, "unchanged": 94 },
+  "changes": [
+    { "changeType": "new", "entry": { "...full entry object..." } },
+    { "changeType": "modified", "entry": { "...full entry object..." } },
+    {
+      "changeType": "deleted",
+      "entryId": "00000000...",
+      "lastKnownSubject": "Cancelled Meeting",
+      "lastKnownStart": "2026-03-25T14:00:00"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `detectedAt` | UTC timestamp of when change detection ran |
+| `previousRunDate` | UTC timestamp of the previous run (null on first run) |
+| `isFullRun` | `true` if no previous state existed — all entries are "new" |
+| `summary` | Counts of new, modified, deleted, and unchanged entries |
+| `changes[].changeType` | One of: `new`, `modified`, `deleted` |
+| `changes[].entry` | Full entry object for new/modified (same schema as export entries) |
+| `changes[].entryId` | Entry ID for deleted items |
+| `changes[].lastKnownSubject` | Last known title for deleted items (may be null) |
+| `changes[].lastKnownStart` | Last known start time for deleted items (may be null) |
+
+### Run History CSV
+
+Each run appends a row to `output/run-history.csv` (max 500 rows, oldest trimmed automatically):
+
+| Column | Description |
+|---|---|
+| `RunDate` | When this run executed |
+| `PreviousRunDate` | When the previous run executed (or "N/A") |
+| `IsFullRun` | Whether this was a full run |
+| `TotalEntries` | Total entries in the current export |
+| `New` / `Modified` / `Deleted` / `Unchanged` | Change counts |
+| `Duration` | How long the detection took |
+| `Status` | "Success" or error status |
+
+### Persistence: last-run.json
+
+The `output/last-run.json` file stores the state needed for change detection:
+- `lastRunDate` — when the last successful run occurred
+- `entryIndex` — map of entryId to lastModified timestamp
+- `entrySummary` — map of entryId to subject/start (used for deleted entry context)
+
+**Delete this file to force a full run.** You can also edit `lastRunDate` to replay changes from a specific point in time.
+
 ## Scheduling as a Windows Task
 
-To run this export automatically:
+To run the export and change detection automatically:
 
 1. Open **Task Scheduler** (`taskschd.msc`)
 2. Create a new task with these settings:
    - **Action**: Start a program
    - **Program**: `powershell.exe`
-   - **Arguments**: `-ExecutionPolicy Bypass -File "C:\path\to\Export-OutlookCalendar.ps1"`
+   - **Arguments**: `-ExecutionPolicy Bypass -Command "& '.\Export-OutlookCalendar.ps1'; & '.\Detect-CalendarChanges.ps1'"`
    - **Start in**: `C:\path\to\scripts\outlook-calendar-export`
 3. Set your desired trigger (e.g., every morning at 7:00 AM)
 4. Under **Conditions**, uncheck "Start only if the computer is on AC power" if on a laptop
