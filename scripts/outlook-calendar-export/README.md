@@ -14,8 +14,7 @@ Exports calendar entries from the Outlook Desktop application to a JSON file for
 To protect sensitive information, the following are **excluded** from the export:
 
 - Meeting body/notes content
-- Attendee/participant lists
-- Organizer name and email address (only the email **domain** is kept, e.g., `google.com`)
+- Attendee and organizer names and email addresses (only email **domains** are kept, e.g., `google.com`)
 - Attachments
 - HTML or RTF content
 - Sensitivity details beyond the busy status
@@ -136,6 +135,8 @@ The exported JSON has this structure:
       "endTimeZone": "Eastern Standard Time",
       "location": "Teams Meeting",
       "organizerDomain": "google.com",
+      "attendeeCount": 5,
+      "attendeeDomains": ["contoso.com", "google.com"],
       "busyStatus": "Busy",
       "responseStatus": "Accepted",
       "isAllDay": false,
@@ -167,6 +168,8 @@ The exported JSON has this structure:
 | `startTimeZone` / `endTimeZone` | Windows timezone ID (e.g., `Eastern Standard Time`, `Pacific Standard Time`) — falls back to system local timezone if unavailable |
 | `location` | Meeting location (room, link, etc.) or null |
 | `organizerDomain` | Email domain of the organizer (e.g., `google.com`) — no names or full emails are stored |
+| `attendeeCount` | Total number of meeting attendees |
+| `attendeeDomains` | Sorted array of unique attendee email domains (e.g., `["contoso.com", "google.com"]`) — no names or full emails |
 | `busyStatus` | One of: `Free`, `Tentative`, `Busy`, `OutOfOffice`, `WorkingElsewhere` |
 | `responseStatus` | One of: `None`, `Organized`, `Tentative`, `Accepted`, `Declined`, `NotResponded` |
 | `isAllDay` | `true` if this is an all-day event |

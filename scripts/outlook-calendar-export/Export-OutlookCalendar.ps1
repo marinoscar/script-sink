@@ -323,6 +323,70 @@ function Get-OrganizerDomain {
     return $null
 }
 
+function Get-AttendeeDomains {
+    <#
+    .SYNOPSIS
+        Extracts a list of unique email domains from the meeting attendees.
+        No names or email usernames are returned — only domains (e.g., "microsoft.com").
+        Also returns the total attendee count for context on meeting size.
+
+        Iterates through the item's Recipients collection and resolves each
+        recipient's SMTP address using multiple fallback approaches, then
+        extracts the domain portion.
+    #>
+    param($Item)
+
+    $domains = @()
+    $totalCount = 0
+
+    try {
+        $recipients = $Item.Recipients
+        if (-not $recipients -or $recipients.Count -eq 0) {
+            return @{ count = 0; domains = @() }
+        }
+
+        for ($i = 1; $i -le $recipients.Count; $i++) {
+            $totalCount++
+            $recipient = $recipients.Item($i)
+            $smtpAddress = $null
+
+            # Try 1: ExchangeUser → PrimarySmtpAddress
+            try {
+                $addressEntry = $recipient.AddressEntry
+                if ($addressEntry) {
+                    try {
+                        $exchUser = $addressEntry.GetExchangeUser()
+                        if ($exchUser -and $exchUser.PrimarySmtpAddress) {
+                            $smtpAddress = $exchUser.PrimarySmtpAddress
+                        }
+                    } catch {}
+
+                    # Try 2: Direct address if SMTP type
+                    if (-not $smtpAddress -and $addressEntry.Type -eq "SMTP") {
+                        $smtpAddress = $addressEntry.Address
+                    }
+
+                    # Try 3: PR_SMTP_ADDRESS via PropertyAccessor
+                    if (-not $smtpAddress) {
+                        try {
+                            $smtpAddress = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                        } catch {}
+                    }
+                }
+            } catch {}
+
+            # Extract domain
+            if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
+                $domains += $Matches[1].ToLower()
+            }
+        }
+    } catch {}
+
+    # Return unique domains sorted, plus the total count
+    $uniqueDomains = @($domains | Sort-Object -Unique)
+    return @{ count = $totalCount; domains = $uniqueDomains }
+}
+
 # DayOfWeekMask is a bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
 function Convert-DayOfWeekMask {
     <#
@@ -451,11 +515,21 @@ while ($item -ne $null) {
             end             = $item.End.ToString("yyyy-MM-ddTHH:mm:ss")
             endTimeZone     = $endTz
             location        = if ($item.Location) { $item.Location } else { $null }
-            organizerDomain = Get-OrganizerDomain -Item $item
-            busyStatus      = $busyText
-            responseStatus  = $responseText
-            isAllDay        = [bool]$item.AllDayEvent
-            isRecurring     = [bool]$item.IsRecurring
+            organizerDomain  = Get-OrganizerDomain -Item $item
+            attendeeCount    = 0
+            attendeeDomains  = @()
+            busyStatus       = $busyText
+            responseStatus   = $responseText
+            isAllDay         = [bool]$item.AllDayEvent
+            isRecurring      = [bool]$item.IsRecurring
+        }
+
+        # Extract attendee domains (unique, no names or emails — just domains)
+        $attendeeInfo = Get-AttendeeDomains -Item $item
+        $entry["attendeeCount"] = $attendeeInfo.count
+        $entry["attendeeDomains"] = $attendeeInfo.domains
+        if ($attendeeInfo.count -gt 0) {
+            Write-Log "  -> Attendees: $($attendeeInfo.count) total, domains: $($attendeeInfo.domains -join ', ')"
         }
 
         # Extract recurrence pattern for recurring items

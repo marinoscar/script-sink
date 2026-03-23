@@ -44,6 +44,8 @@
         "startTimeZone",
         "end",
         "endTimeZone",
+        "attendeeCount",
+        "attendeeDomains",
         "busyStatus",
         "responseStatus",
         "isAllDay",
@@ -88,6 +90,18 @@
         "organizerDomain": {
           "type": ["string", "null"],
           "description": "Email domain of the meeting organizer (e.g., 'google.com'). Only the domain is stored for privacy — no names or full email addresses. Null if the domain could not be resolved."
+        },
+        "attendeeCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of attendees (required + optional + resource) on the meeting. 0 for events with no attendees."
+        },
+        "attendeeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted list of unique email domains of meeting attendees (e.g., ['google.com', 'microsoft.com']). Only domains are stored for privacy — no names or full email addresses. Empty array if no attendee domains could be resolved."
         },
         "busyStatus": {
           "type": "string",
