@@ -255,6 +255,74 @@ $recurrenceTypeMap = @{
     6 = "YearlyNth"
 }
 
+function Get-OrganizerDomain {
+    <#
+    .SYNOPSIS
+        Extracts only the email domain of the meeting organizer (e.g., "google.com").
+        No names or email usernames are returned — only the domain portion,
+        to avoid persisting sensitive/personal information.
+
+        Tries multiple approaches to resolve the SMTP address:
+        1. GetOrganizer() → ExchangeUser → PrimarySmtpAddress
+        2. GetOrganizer() → SMTP address via PropertyAccessor
+        3. MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS property
+        4. MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS property
+    #>
+    param($Item)
+
+    $smtpAddress = $null
+
+    # Try 1: GetOrganizer() → ExchangeUser (most reliable for Exchange/O365 accounts)
+    try {
+        $addressEntry = $Item.GetOrganizer()
+        if ($addressEntry) {
+            # For Exchange users, get the SMTP address from the ExchangeUser object
+            try {
+                $exchUser = $addressEntry.GetExchangeUser()
+                if ($exchUser -and $exchUser.PrimarySmtpAddress) {
+                    $smtpAddress = $exchUser.PrimarySmtpAddress
+                }
+            } catch {}
+
+            # If ExchangeUser didn't work, try the address directly (works for SMTP type)
+            if (-not $smtpAddress -and $addressEntry.Type -eq "SMTP") {
+                $smtpAddress = $addressEntry.Address
+            }
+
+            # Try PropertyAccessor on the AddressEntry for the SMTP address
+            if (-not $smtpAddress) {
+                try {
+                    $smtpAddress = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                } catch {}
+            }
+        }
+    } catch {}
+
+    # Try 2: MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS on the item itself
+    if (-not $smtpAddress) {
+        try {
+            $smtpAddress = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D01001F")
+        } catch {}
+    }
+
+    # Try 3: MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS (may be X500 for Exchange, or SMTP)
+    if (-not $smtpAddress) {
+        try {
+            $addr = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0065001F")
+            if ($addr -and $addr -match "@") {
+                $smtpAddress = $addr
+            }
+        } catch {}
+    }
+
+    # Extract domain from the SMTP address
+    if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
+        return $Matches[1].ToLower()
+    }
+
+    return $null
+}
+
 # DayOfWeekMask is a bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
 function Convert-DayOfWeekMask {
     <#
@@ -363,19 +431,31 @@ while ($item -ne $null) {
 
         Write-Log "  -> Recurring: $($item.IsRecurring), BusyStatus: $busyText, Response: $responseText"
 
+        # Resolve time zones — Outlook exposes StartTimeZone and EndTimeZone (Outlook 2007+).
+        # These return a TimeZone object with an ID property (IANA-style Windows timezone ID).
+        # Fall back to the system local timezone if the property is unavailable.
+        $startTz = $null
+        $endTz = $null
+        try { $startTz = $item.StartTimeZone.ID } catch {}
+        try { $endTz = $item.EndTimeZone.ID } catch {}
+        if (-not $startTz) { $startTz = [System.TimeZoneInfo]::Local.Id }
+        if (-not $endTz) { $endTz = [System.TimeZoneInfo]::Local.Id }
+
         # Build the entry object
         $entry = [ordered]@{
-            entryId        = $item.EntryID
-            lastModified   = $item.LastModificationTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            subject        = $subject
-            start          = $item.Start.ToString("yyyy-MM-ddTHH:mm:ss")
-            end            = $item.End.ToString("yyyy-MM-ddTHH:mm:ss")
-            location       = if ($item.Location) { $item.Location } else { $null }
-            organizer      = if ($item.Organizer) { $item.Organizer } else { $null }
-            busyStatus     = $busyText
-            responseStatus = $responseText
-            isAllDay       = [bool]$item.AllDayEvent
-            isRecurring    = [bool]$item.IsRecurring
+            entryId         = $item.EntryID
+            lastModified    = $item.LastModificationTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            subject         = $subject
+            start           = $item.Start.ToString("yyyy-MM-ddTHH:mm:ss")
+            startTimeZone   = $startTz
+            end             = $item.End.ToString("yyyy-MM-ddTHH:mm:ss")
+            endTimeZone     = $endTz
+            location        = if ($item.Location) { $item.Location } else { $null }
+            organizerDomain = Get-OrganizerDomain -Item $item
+            busyStatus      = $busyText
+            responseStatus  = $responseText
+            isAllDay        = [bool]$item.AllDayEvent
+            isRecurring     = [bool]$item.IsRecurring
         }
 
         # Extract recurrence pattern for recurring items

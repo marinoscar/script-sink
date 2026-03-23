@@ -15,6 +15,7 @@ To protect sensitive information, the following are **excluded** from the export
 
 - Meeting body/notes content
 - Attendee/participant lists
+- Organizer name and email address (only the email **domain** is kept, e.g., `google.com`)
 - Attachments
 - HTML or RTF content
 - Sensitivity details beyond the busy status
@@ -61,7 +62,7 @@ This will:
 - Test the connection to Outlook
 - Extract today's calendar entries
 - Display them in a table on screen
-- Save a CSV to `output\test-calendar.csv`
+- Save a CSV to `output\test-calendar.csv` (EntryID, OrganizerDomain, Start, End, TimeZone, ResponseStatus)
 
 If this fails, check the [Troubleshooting](#troubleshooting) section.
 
@@ -130,9 +131,11 @@ The exported JSON has this structure:
       "lastModified": "2026-03-20T14:30:00Z",
       "subject": "Weekly Standup",
       "start": "2026-03-24T09:00:00",
+      "startTimeZone": "Eastern Standard Time",
       "end": "2026-03-24T09:30:00",
+      "endTimeZone": "Eastern Standard Time",
       "location": "Teams Meeting",
-      "organizer": "Jane Smith",
+      "organizerDomain": "google.com",
       "busyStatus": "Busy",
       "responseStatus": "Accepted",
       "isAllDay": false,
@@ -161,8 +164,9 @@ The exported JSON has this structure:
 | `lastModified` | UTC timestamp of last modification — use to detect updates |
 | `subject` | Meeting/event title |
 | `start` / `end` | Local date-time of the occurrence |
+| `startTimeZone` / `endTimeZone` | Windows timezone ID (e.g., `Eastern Standard Time`, `Pacific Standard Time`) — falls back to system local timezone if unavailable |
 | `location` | Meeting location (room, link, etc.) or null |
-| `organizer` | Display name of the meeting organizer |
+| `organizerDomain` | Email domain of the organizer (e.g., `google.com`) — no names or full emails are stored |
 | `busyStatus` | One of: `Free`, `Tentative`, `Busy`, `OutOfOffice`, `WorkingElsewhere` |
 | `responseStatus` | One of: `None`, `Organized`, `Tentative`, `Accepted`, `Declined`, `NotResponded` |
 | `isAllDay` | `true` if this is an all-day event |

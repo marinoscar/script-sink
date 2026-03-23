@@ -112,6 +112,40 @@ try {
         5 = "NotResponded"
     }
 
+    # Extract only the organizer's email domain (e.g., "google.com") to avoid
+    # persisting sensitive personal information like names or full email addresses.
+    function Get-OrganizerDomain {
+        param($Item)
+        $smtpAddress = $null
+        # Try 1: GetOrganizer() → ExchangeUser → PrimarySmtpAddress
+        try {
+            $addressEntry = $Item.GetOrganizer()
+            if ($addressEntry) {
+                try {
+                    $exchUser = $addressEntry.GetExchangeUser()
+                    if ($exchUser -and $exchUser.PrimarySmtpAddress) { $smtpAddress = $exchUser.PrimarySmtpAddress }
+                } catch {}
+                if (-not $smtpAddress -and $addressEntry.Type -eq "SMTP") { $smtpAddress = $addressEntry.Address }
+                if (-not $smtpAddress) {
+                    try { $smtpAddress = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F") } catch {}
+                }
+            }
+        } catch {}
+        # Try 2: MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS
+        if (-not $smtpAddress) {
+            try { $smtpAddress = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D01001F") } catch {}
+        }
+        # Try 3: MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS (only if it looks like SMTP)
+        if (-not $smtpAddress) {
+            try {
+                $addr = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0065001F")
+                if ($addr -and $addr -match "@") { $smtpAddress = $addr }
+            } catch {}
+        }
+        if ($smtpAddress -and $smtpAddress -match "@(.+)$") { return $Matches[1].ToLower() }
+        return $null
+    }
+
     $item = $filteredItems.GetFirst()
     $count = 0
     while ($item -ne $null) {
@@ -120,12 +154,18 @@ try {
             $responseText = $responseStatusMap[[int]$item.ResponseStatus]
             if (-not $responseText) { $responseText = "Unknown($($item.ResponseStatus))" }
 
+            # Resolve timezone — fall back to system local if unavailable
+            $tz = $null
+            try { $tz = $item.StartTimeZone.ID } catch {}
+            if (-not $tz) { $tz = [System.TimeZoneInfo]::Local.Id }
+
             $results += [PSCustomObject]@{
-                EntryID        = $item.EntryID
-                Organizer      = $item.Organizer
-                Start          = $item.Start.ToString("yyyy-MM-dd HH:mm")
-                End            = $item.End.ToString("yyyy-MM-dd HH:mm")
-                ResponseStatus = $responseText
+                EntryID         = $item.EntryID
+                OrganizerDomain = Get-OrganizerDomain -Item $item
+                Start           = $item.Start.ToString("yyyy-MM-dd HH:mm")
+                End             = $item.End.ToString("yyyy-MM-dd HH:mm")
+                TimeZone        = $tz
+                ResponseStatus  = $responseText
             }
         } catch {
             Write-Host "       WARNING: Could not read item $count - $($_.Exception.Message)" -ForegroundColor Yellow
