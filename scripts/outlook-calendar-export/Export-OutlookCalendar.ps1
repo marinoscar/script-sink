@@ -768,6 +768,9 @@ try {
 Write-Log "Accessing MAPI namespace..."
 try {
     $namespace = $outlook.GetNamespace("MAPI")
+    # Logon to the MAPI session — this can unlock Object Model Guard security
+    # that blocks programmatic access to Recipients and PropertyAccessor.
+    try { $namespace.Logon("", "", $false, $false) } catch {}
     Write-Log "MAPI namespace accessed." -Level Success
 } catch {
     Write-Log "FATAL: Could not access MAPI namespace." -Level Error
@@ -788,6 +791,85 @@ try {
     Write-Log "Error: $($_.Exception.Message)" -Level Error
     exit 1
 }
+
+# ==================================================
+# Step 3b: Diagnostic probe — test property access on a raw calendar item
+# ==================================================
+Write-Log "--- Diagnostic probe: testing property access on first calendar item ---"
+try {
+    $probeItems = $calendarFolder.Items
+    $probeItem = $probeItems.GetFirst()
+    if ($probeItem) {
+        Write-Log "  Probe subject:            '$($probeItem.Subject)'"
+        Write-Log "  Probe start:              '$($probeItem.Start)'"
+
+        # Test Recipients
+        $probeRecipients = $null
+        try {
+            $probeRecipients = $probeItem.Recipients
+            $probeRecipCount = -1
+            try { $probeRecipCount = $probeRecipients.Count } catch { Write-Log "  Probe Recipients.Count:   ERROR - $($_.Exception.Message)" -Level Warning }
+            Write-Log "  Probe Recipients.Count:   $probeRecipCount"
+            if ($probeRecipCount -le 0) {
+                # Try to access Item(1) even if Count is 0
+                try {
+                    $probeRecip1 = $probeRecipients.Item(1)
+                    Write-Log "  Probe Recipients.Item(1): Name='$($probeRecip1.Name)'" -Level Success
+                } catch {
+                    Write-Log "  Probe Recipients.Item(1): ERROR - $($_.Exception.Message)" -Level Warning
+                }
+            } else {
+                try {
+                    $probeRecip1 = $probeRecipients.Item(1)
+                    Write-Log "  Probe Recipients.Item(1): Name='$($probeRecip1.Name)'" -Level Success
+                } catch {
+                    Write-Log "  Probe Recipients.Item(1): ERROR - $($_.Exception.Message)" -Level Warning
+                }
+            }
+        } catch {
+            Write-Log "  Probe Recipients:         ERROR - $($_.Exception.Message)" -Level Warning
+        }
+
+        # Test RequiredAttendees
+        try { Write-Log "  Probe RequiredAttendees:  '$($probeItem.RequiredAttendees)'" } catch { Write-Log "  Probe RequiredAttendees:  ERROR - $($_.Exception.Message)" -Level Warning }
+        try { Write-Log "  Probe OptionalAttendees:  '$($probeItem.OptionalAttendees)'" } catch { Write-Log "  Probe OptionalAttendees:  ERROR - $($_.Exception.Message)" -Level Warning }
+
+        # Test PropertyAccessor
+        try {
+            $probePA = $probeItem.PropertyAccessor
+            if ($probePA) {
+                Write-Log "  Probe PropertyAccessor:   available"
+                try {
+                    $probeTo = $probePA.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E04001F")
+                    Write-Log "  Probe PR_DISPLAY_TO:      '$probeTo'"
+                } catch {
+                    Write-Log "  Probe PR_DISPLAY_TO:      ERROR - $($_.Exception.Message)" -Level Warning
+                }
+            } else {
+                Write-Log "  Probe PropertyAccessor:   NULL" -Level Warning
+            }
+        } catch {
+            Write-Log "  Probe PropertyAccessor:   ERROR - $($_.Exception.Message)" -Level Warning
+        }
+
+        # Test GetOrganizer
+        try {
+            $probeOrg = $probeItem.GetOrganizer()
+            if ($probeOrg) {
+                Write-Log "  Probe GetOrganizer:       Name='$($probeOrg.Name)', Type='$($probeOrg.Type)'"
+            } else {
+                Write-Log "  Probe GetOrganizer:       NULL"
+            }
+        } catch {
+            Write-Log "  Probe GetOrganizer:       ERROR - $($_.Exception.Message)" -Level Warning
+        }
+    } else {
+        Write-Log "  No items in calendar folder" -Level Warning
+    }
+} catch {
+    Write-Log "  Probe failed: $($_.Exception.Message)" -Level Warning
+}
+Write-Log "--- End diagnostic probe ---"
 
 # ==================================================
 # Step 4: Calculate date range and set up filter
