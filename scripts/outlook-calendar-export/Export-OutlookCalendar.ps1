@@ -551,9 +551,9 @@ function Get-AttendeeDomains {
     $domains = @()
     $totalCount = 0
 
-    # For recurring occurrences, try the master cache first — occurrence items
-    # are lightweight and have no attendee data at all.
-    if ($Item.IsRecurring -and $MasterCache) {
+    # Try the item cache first — when IncludeRecurrences is enabled, ALL items
+    # (recurring and non-recurring) are lightweight with no attendee data.
+    if ($MasterCache) {
         $subj = if ($Item.Subject) { $Item.Subject } else { "" }
         if ($subj -and $MasterCache.ContainsKey($subj)) {
             Write-Log "  -> Attendees: Using cached master item for '$subj'"
@@ -804,41 +804,40 @@ $filteredItems = $items.Restrict($filter)
 Write-Log "Item filter applied. Beginning enumeration..." -Level Success
 
 # ==================================================
-# Step 4b: Build master recurring item cache
+# Step 4b: Build item cache with full recipient data
 # ==================================================
-# Occurrence items from IncludeRecurrences are lightweight — they have no
-# Recipients, RequiredAttendees, or OptionalAttendees. To get attendee data
-# for recurring meetings, we pre-cache the master series items (which have
-# full recipient data) by reading the calendar folder WITHOUT IncludeRecurrences.
-Write-Log "Building master recurring item cache for attendee resolution..."
+# When IncludeRecurrences is set on the Items collection, ALL items (including
+# non-recurring) are returned as lightweight objects with no Recipients,
+# RequiredAttendees, or OptionalAttendees. To get attendee data, we read the
+# calendar folder a second time WITHOUT IncludeRecurrences and cache items
+# that have Recipients, keyed by subject.
+Write-Log "Building item cache for attendee resolution (without IncludeRecurrences)..."
 $script:masterRecipientCache = @{}
 try {
-    $masterItems = $calendarFolder.Items
-    $masterItems.Sort("[Start]")
-    # Do NOT set IncludeRecurrences — we want master series items only
-    $masterFiltered = $masterItems.Restrict($filter)
+    $cacheItems = $calendarFolder.Items
+    $cacheItems.Sort("[Start]")
+    # Do NOT set IncludeRecurrences — this gives us full items with Recipients
+    $cacheFiltered = $cacheItems.Restrict($filter)
 
-    $masterItem = $masterFiltered.GetFirst()
+    $cacheItem = $cacheFiltered.GetFirst()
     $cacheCount = 0
-    while ($masterItem -ne $null) {
+    while ($cacheItem -ne $null) {
         try {
-            if ($masterItem.IsRecurring) {
-                $subj = if ($masterItem.Subject) { $masterItem.Subject } else { "" }
-                if ($subj -and -not $script:masterRecipientCache.ContainsKey($subj)) {
-                    $recipCount = 0
-                    try { $recipCount = $masterItem.Recipients.Count } catch {}
-                    if ($recipCount -gt 0) {
-                        $script:masterRecipientCache[$subj] = $masterItem
-                        $cacheCount++
-                    }
+            $subj = if ($cacheItem.Subject) { $cacheItem.Subject } else { "" }
+            if ($subj -and -not $script:masterRecipientCache.ContainsKey($subj)) {
+                $recipCount = 0
+                try { $recipCount = $cacheItem.Recipients.Count } catch {}
+                if ($recipCount -gt 0) {
+                    $script:masterRecipientCache[$subj] = $cacheItem
+                    $cacheCount++
                 }
             }
         } catch {}
-        $masterItem = $masterFiltered.GetNext()
+        $cacheItem = $cacheFiltered.GetNext()
     }
-    Write-Log "Cached $cacheCount recurring master items with recipients." -Level Success
+    Write-Log "Cached $cacheCount items with recipients." -Level Success
 } catch {
-    Write-Log "WARNING: Failed to build master item cache: $($_.Exception.Message)" -Level Warning
+    Write-Log "WARNING: Failed to build item cache: $($_.Exception.Message)" -Level Warning
 }
 
 # ==================================================
