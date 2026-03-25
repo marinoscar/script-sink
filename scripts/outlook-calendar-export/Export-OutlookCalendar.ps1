@@ -551,42 +551,29 @@ function Get-AttendeeDomains {
     $domains = @()
     $totalCount = 0
 
-    # Try the item cache first — when IncludeRecurrences is enabled, ALL items
-    # (recurring and non-recurring) are lightweight with no attendee data.
+    # Try the attendee name cache first — built before IncludeRecurrences was
+    # enabled, using Recipients, RequiredAttendees/OptionalAttendees, and MAPI
+    # PR_DISPLAY_TO/PR_DISPLAY_CC properties.
     if ($MasterCache) {
         $subj = if ($Item.Subject) { $Item.Subject } else { "" }
         if ($subj -and $MasterCache.ContainsKey($subj)) {
-            Write-Log "  -> Attendees: Using cached master item for '$subj'"
-            $masterItem = $MasterCache[$subj]
-            try {
-                $recipients = $masterItem.Recipients
-                if ($recipients -and $recipients.Count -gt 0) {
-                    $totalCount = $recipients.Count
-                    $unresolvedRecips = @()
-                    for ($i = 1; $i -le $recipients.Count; $i++) {
-                        $recipient = $recipients.Item($i)
-                        $smtpAddress = $null
-                        try {
-                            $ae = $recipient.AddressEntry
-                            $smtpAddress = Resolve-SmtpAddress -AddressEntry $ae -DisplayName $recipient.Name -Namespace $Namespace
-                        } catch {}
-
-                        if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
-                            $domains += $Matches[1].ToLower()
-                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
-                        } elseif ($CompanyDomain) {
-                            $domains += $CompanyDomain.ToLower()
-                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' unresolved, using company domain: $CompanyDomain" -Level Warning
-                        } else {
-                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' could not be resolved" -Level Warning
-                        }
-                    }
-                    $uniqueDomains = @($domains | Sort-Object -Unique)
-                    return @{ count = $totalCount; domains = $uniqueDomains }
+            $cachedNames = @($MasterCache[$subj])
+            Write-Log "  -> Attendees: Using cached names for '$subj' ($($cachedNames.Count) names)"
+            $totalCount = $cachedNames.Count
+            foreach ($name in $cachedNames) {
+                $smtpAddress = Resolve-SmtpAddress -AddressEntry $null -DisplayName $name -Namespace $Namespace
+                if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
+                    $domains += $Matches[1].ToLower()
+                    Write-Log "  -> Attendee: '$name' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
+                } elseif ($CompanyDomain) {
+                    $domains += $CompanyDomain.ToLower()
+                    Write-Log "  -> Attendee: '$name' unresolved, using company domain: $CompanyDomain" -Level Warning
+                } else {
+                    Write-Log "  -> Attendee: '$name' could not be resolved" -Level Warning
                 }
-            } catch {
-                Write-Log "  -> Attendees: Master cache item failed: $($_.Exception.Message)" -Level Warning
             }
+            $uniqueDomains = @($domains | Sort-Object -Unique)
+            return @{ count = $totalCount; domains = $uniqueDomains }
         }
     }
 
@@ -608,6 +595,28 @@ function Get-AttendeeDomains {
         $fallbackCount = $attendeeNames.Count
     } catch {
         Write-Log "  -> WARNING: Could not read attendee string properties: $($_.Exception.Message)" -Level Warning
+    }
+
+    # Method 3: Try MAPI PR_DISPLAY_TO and PR_DISPLAY_CC on the current item
+    if ($attendeeNames.Count -eq 0) {
+        try {
+            $displayTo = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E04001F")
+            Write-Log "  -> Attendees MAPI PR_DISPLAY_TO: '$displayTo'"
+            if ($displayTo) { $attendeeNames += ($displayTo -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+        } catch {
+            Write-Log "  -> Attendees MAPI PR_DISPLAY_TO failed: $($_.Exception.Message)" -Level Warning
+        }
+        try {
+            $displayCc = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E03001F")
+            Write-Log "  -> Attendees MAPI PR_DISPLAY_CC: '$displayCc'"
+            if ($displayCc) { $attendeeNames += ($displayCc -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+        } catch {
+            Write-Log "  -> Attendees MAPI PR_DISPLAY_CC failed: $($_.Exception.Message)" -Level Warning
+        }
+        if ($attendeeNames.Count -gt 0) {
+            $fallbackCount = $attendeeNames.Count
+            Write-Log "  -> Attendees: Got $fallbackCount names from MAPI properties"
+        }
     }
 
     # Determine which item to read Recipients from — occurrence items from
@@ -801,33 +810,64 @@ Write-Log "  Outlook filter: $filter"
 # once IncludeRecurrences = $true is set, ALL subsequent Items from the
 # same folder return lightweight objects with no Recipients data.
 Write-Log "Building item cache for attendee resolution (before IncludeRecurrences)..."
-$script:masterRecipientCache = @{}
+$script:masterAttendeeCache = @{}
 try {
     $cacheItems = $calendarFolder.Items
     $cacheItems.Sort("[Start]")
-    # Do NOT set IncludeRecurrences — this gives us full items with Recipients
     $cacheFiltered = $cacheItems.Restrict($filter)
 
     $cacheItem = $cacheFiltered.GetFirst()
     $cacheCount = 0
-    $cacheNoRecip = 0
+    $cacheNoData = 0
     while ($cacheItem -ne $null) {
         try {
             $subj = if ($cacheItem.Subject) { $cacheItem.Subject } else { "" }
-            if ($subj -and -not $script:masterRecipientCache.ContainsKey($subj)) {
-                $recipCount = 0
-                try { $recipCount = $cacheItem.Recipients.Count } catch {}
-                if ($recipCount -gt 0) {
-                    $script:masterRecipientCache[$subj] = $cacheItem
+            if ($subj -and -not $script:masterAttendeeCache.ContainsKey($subj)) {
+                $attendeeNames = @()
+
+                # Method 1: Recipients collection
+                try {
+                    $recips = $cacheItem.Recipients
+                    if ($recips -and $recips.Count -gt 0) {
+                        for ($ri = 1; $ri -le $recips.Count; $ri++) {
+                            try { $attendeeNames += $recips.Item($ri).Name } catch {}
+                        }
+                    }
+                } catch {}
+
+                # Method 2: RequiredAttendees / OptionalAttendees string properties
+                if ($attendeeNames.Count -eq 0) {
+                    try {
+                        $reqStr = $cacheItem.RequiredAttendees
+                        $optStr = $cacheItem.OptionalAttendees
+                        if ($reqStr) { $attendeeNames += ($reqStr -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+                        if ($optStr) { $attendeeNames += ($optStr -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+                    } catch {}
+                }
+
+                # Method 3: MAPI PR_DISPLAY_TO (0x0E04001F) and PR_DISPLAY_CC (0x0E03001F)
+                if ($attendeeNames.Count -eq 0) {
+                    try {
+                        $displayTo = $cacheItem.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E04001F")
+                        if ($displayTo) { $attendeeNames += ($displayTo -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+                    } catch {}
+                    try {
+                        $displayCc = $cacheItem.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E03001F")
+                        if ($displayCc) { $attendeeNames += ($displayCc -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() } }
+                    } catch {}
+                }
+
+                if ($attendeeNames.Count -gt 0) {
+                    $script:masterAttendeeCache[$subj] = $attendeeNames
                     $cacheCount++
                 } else {
-                    $cacheNoRecip++
+                    $cacheNoData++
                 }
             }
         } catch {}
         $cacheItem = $cacheFiltered.GetNext()
     }
-    Write-Log "Cached $cacheCount items with recipients ($cacheNoRecip items had no recipients)." -Level Success
+    Write-Log "Cached $cacheCount items with attendee data ($cacheNoData items had no attendee data)." -Level Success
 } catch {
     Write-Log "WARNING: Failed to build item cache: $($_.Exception.Message)" -Level Warning
 }
@@ -901,7 +941,7 @@ while ($item -ne $null) {
         }
 
         # Extract attendee domains (unique, no names or emails — just domains)
-        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain -MasterCache $script:masterRecipientCache
+        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain -MasterCache $script:masterAttendeeCache
         $entry["attendeeCount"] = $attendeeInfo.count
         $entry["attendeeDomains"] = $attendeeInfo.domains
         if ($attendeeInfo.count -gt 0) {
