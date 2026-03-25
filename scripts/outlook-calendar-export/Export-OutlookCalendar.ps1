@@ -264,7 +264,7 @@ function Get-OrganizerDomain {
 
         Tries multiple approaches to resolve the SMTP address:
         1. GetOrganizer() → ExchangeUser → PrimarySmtpAddress
-        2. GetOrganizer() → SMTP address via PropertyAccessor
+        2. GetOrganizer() → direct Address (SMTP type) or PropertyAccessor
         3. MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS property
         4. MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS property
         5. Organizer string property (may contain email)
@@ -278,68 +278,115 @@ function Get-OrganizerDomain {
     $ErrorActionPreference = "Continue"
 
     $smtpAddress = $null
+    # Collect diagnostic info for logging when all methods fail
+    $diagInfo = @{}
 
     # Try 1: GetOrganizer() → ExchangeUser (most reliable for Exchange/O365 accounts)
     try {
         $addressEntry = $Item.GetOrganizer()
         if ($addressEntry) {
+            $diagInfo["GetOrganizer.Type"] = $addressEntry.Type
+            $diagInfo["GetOrganizer.Address"] = $addressEntry.Address
+            $diagInfo["GetOrganizer.Name"] = $addressEntry.Name
+
             # For Exchange users, get the SMTP address from the ExchangeUser object
             try {
                 $exchUser = $addressEntry.GetExchangeUser()
                 if ($exchUser -and $exchUser.PrimarySmtpAddress) {
                     $smtpAddress = $exchUser.PrimarySmtpAddress
+                    $diagInfo["ResolvedVia"] = "GetOrganizer.ExchangeUser"
                 }
-            } catch {}
+            } catch {
+                $diagInfo["ExchangeUser.Error"] = $_.Exception.Message
+            }
 
             # If ExchangeUser didn't work, try the address directly (works for SMTP type)
-            if (-not $smtpAddress -and $addressEntry.Type -eq "SMTP") {
-                $smtpAddress = $addressEntry.Address
+            if (-not $smtpAddress -and $addressEntry.Address) {
+                if ($addressEntry.Type -eq "SMTP") {
+                    $smtpAddress = $addressEntry.Address
+                    $diagInfo["ResolvedVia"] = "GetOrganizer.SMTP"
+                } elseif ($addressEntry.Address -match "@") {
+                    # Some address types (e.g. "EX") may still have an SMTP-style address
+                    $smtpAddress = $addressEntry.Address
+                    $diagInfo["ResolvedVia"] = "GetOrganizer.Address(@)"
+                }
             }
 
             # Try PropertyAccessor on the AddressEntry for the SMTP address
             if (-not $smtpAddress) {
                 try {
-                    $smtpAddress = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
-                } catch {}
+                    $prop = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                    if ($prop) {
+                        $smtpAddress = $prop
+                        $diagInfo["ResolvedVia"] = "GetOrganizer.PropertyAccessor"
+                    }
+                } catch {
+                    $diagInfo["GetOrganizer.PA.Error"] = $_.Exception.Message
+                }
             }
+        } else {
+            $diagInfo["GetOrganizer"] = "returned null"
         }
-    } catch {}
+    } catch {
+        $diagInfo["GetOrganizer.Error"] = $_.Exception.Message
+    }
 
     # Try 2: MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS on the item itself
     if (-not $smtpAddress) {
         try {
-            $smtpAddress = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D01001F")
-        } catch {}
+            $prop = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D01001F")
+            if ($prop) {
+                $smtpAddress = $prop
+                $diagInfo["ResolvedVia"] = "MAPI.SentRepresentingSMTP"
+            }
+        } catch {
+            $diagInfo["MAPI.0x5D01.Error"] = $_.Exception.Message
+        }
     }
 
     # Try 3: MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS (may be X500 for Exchange, or SMTP)
     if (-not $smtpAddress) {
         try {
             $addr = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0065001F")
+            $diagInfo["MAPI.SentRepresentingEmail"] = $addr
             if ($addr -and $addr -match "@") {
                 $smtpAddress = $addr
+                $diagInfo["ResolvedVia"] = "MAPI.SentRepresentingEmail"
             }
-        } catch {}
+        } catch {
+            $diagInfo["MAPI.0x0065.Error"] = $_.Exception.Message
+        }
     }
 
     # Try 4: Organizer property — plain string, may contain an email address
     if (-not $smtpAddress) {
         try {
             $organizer = $Item.Organizer
-            if ($organizer -and $organizer -match "@(.+)$") {
+            $diagInfo["Item.Organizer"] = $organizer
+            if ($organizer -and $organizer -match "@") {
                 $smtpAddress = $organizer
+                $diagInfo["ResolvedVia"] = "Item.Organizer"
             }
-        } catch {}
+        } catch {
+            $diagInfo["Item.Organizer.Error"] = $_.Exception.Message
+        }
+    } else {
+        # Still capture organizer name for diagnostics even if already resolved
+        try { $diagInfo["Item.Organizer"] = $Item.Organizer } catch {}
     }
 
     # Try 5: SenderEmailAddress property (available on received meeting requests)
     if (-not $smtpAddress) {
         try {
             $senderEmail = $Item.SenderEmailAddress
+            $diagInfo["Item.SenderEmailAddress"] = $senderEmail
             if ($senderEmail -and $senderEmail -match "@") {
                 $smtpAddress = $senderEmail
+                $diagInfo["ResolvedVia"] = "Item.SenderEmailAddress"
             }
-        } catch {}
+        } catch {
+            $diagInfo["SenderEmail.Error"] = $_.Exception.Message
+        }
     }
 
     # Try 6: Resolve organizer name via Recipients collection — the organizer
@@ -353,6 +400,8 @@ function Get-OrganizerDomain {
                 for ($i = 1; $i -le $recipients.Count; $i++) {
                     $recip = $recipients.Item($i)
                     if ($recip.Name -eq $organizer) {
+                        $diagInfo["Recip.Match.Type"] = $recip.AddressEntry.Type
+                        $diagInfo["Recip.Match.Address"] = $recip.AddressEntry.Address
                         try {
                             $ae = $recip.AddressEntry
                             if ($ae) {
@@ -360,11 +409,16 @@ function Get-OrganizerDomain {
                                     $eu = $ae.GetExchangeUser()
                                     if ($eu -and $eu.PrimarySmtpAddress) {
                                         $smtpAddress = $eu.PrimarySmtpAddress
+                                        $diagInfo["ResolvedVia"] = "Recipients.ExchangeUser"
                                     }
                                 } catch {}
                                 if (-not $smtpAddress) {
                                     try {
-                                        $smtpAddress = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                                        $prop = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                                        if ($prop) {
+                                            $smtpAddress = $prop
+                                            $diagInfo["ResolvedVia"] = "Recipients.PropertyAccessor"
+                                        }
                                     } catch {}
                                 }
                             }
@@ -373,7 +427,9 @@ function Get-OrganizerDomain {
                     }
                 }
             }
-        } catch {}
+        } catch {
+            $diagInfo["Recipients.Error"] = $_.Exception.Message
+        }
     }
 
     # Extract domain from the SMTP address
@@ -381,7 +437,13 @@ function Get-OrganizerDomain {
         return $Matches[1].ToLower()
     }
 
-    Write-Log "  -> WARNING: Could not resolve organizer domain for item" -Level Warning
+    # Log all diagnostic info so we can see what Outlook actually returned
+    $diagParts = @()
+    foreach ($key in $diagInfo.Keys | Sort-Object) {
+        $diagParts += "${key}='$($diagInfo[$key])'"
+    }
+    $diagString = $diagParts -join ", "
+    Write-Log "  -> WARNING: Could not resolve organizer domain. Diagnostics: $diagString" -Level Warning
     return $null
 }
 
@@ -421,19 +483,26 @@ function Get-AttendeeDomains {
     try {
         $recipients = $Item.Recipients
         if (-not $recipients -or $recipients.Count -eq 0) {
+            Write-Log "  -> Attendees: Recipients collection empty/null (fallbackCount=$fallbackCount)" -Level Warning
             return @{ count = $fallbackCount; domains = @() }
         }
 
         $totalCount = $recipients.Count
+        $unresolvedRecips = @()
 
         for ($i = 1; $i -le $recipients.Count; $i++) {
             $recipient = $recipients.Item($i)
             $smtpAddress = $null
+            $recipDiag = @{}
 
             # Try 1: ExchangeUser → PrimarySmtpAddress
             try {
                 $addressEntry = $recipient.AddressEntry
                 if ($addressEntry) {
+                    $recipDiag["Type"] = $addressEntry.Type
+                    $recipDiag["Address"] = $addressEntry.Address
+                    $recipDiag["Name"] = $recipient.Name
+
                     try {
                         $exchUser = $addressEntry.GetExchangeUser()
                         if ($exchUser -and $exchUser.PrimarySmtpAddress) {
@@ -441,9 +510,13 @@ function Get-AttendeeDomains {
                         }
                     } catch {}
 
-                    # Try 2: Direct address if SMTP type
-                    if (-not $smtpAddress -and $addressEntry.Type -eq "SMTP") {
-                        $smtpAddress = $addressEntry.Address
+                    # Try 2: Direct address if SMTP type or contains @
+                    if (-not $smtpAddress -and $addressEntry.Address) {
+                        if ($addressEntry.Type -eq "SMTP") {
+                            $smtpAddress = $addressEntry.Address
+                        } elseif ($addressEntry.Address -match "@") {
+                            $smtpAddress = $addressEntry.Address
+                        }
                     }
 
                     # Try 3: PR_SMTP_ADDRESS via PropertyAccessor
@@ -458,6 +531,21 @@ function Get-AttendeeDomains {
             # Extract domain
             if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
                 $domains += $Matches[1].ToLower()
+            } else {
+                # Track unresolved recipients for diagnostic logging
+                $parts = @()
+                foreach ($key in $recipDiag.Keys | Sort-Object) {
+                    $parts += "${key}='$($recipDiag[$key])'"
+                }
+                $unresolvedRecips += ($parts -join ", ")
+            }
+        }
+
+        # Log unresolved recipients so we can diagnose the address format
+        if ($unresolvedRecips.Count -gt 0) {
+            Write-Log "  -> Attendees: $($unresolvedRecips.Count)/$totalCount recipients could not be resolved to SMTP" -Level Warning
+            foreach ($diag in $unresolvedRecips) {
+                Write-Log "     Unresolved: $diag" -Level Warning
             }
         }
     } catch {
