@@ -63,7 +63,8 @@ param(
     [int]$DaysForward,
     [string]$OutputPath,
     [string]$LogPath,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [string]$CompanyDomain
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,10 +75,11 @@ $startTime = Get-Date
 # Built-in defaults
 # ==================================================
 $defaults = @{
-    DaysBack    = 15
-    DaysForward = 90
-    OutputPath  = Join-Path $scriptDir "output\calendar-export.json"
-    LogPath     = Join-Path $scriptDir "logs"
+    DaysBack      = 15
+    DaysForward   = 90
+    OutputPath    = Join-Path $scriptDir "output\calendar-export.json"
+    LogPath       = Join-Path $scriptDir "logs"
+    CompanyDomain = "mycompany.com"
 }
 
 # ==================================================
@@ -201,6 +203,16 @@ $finalLogPath = if ($PSBoundParameters.ContainsKey('LogPath')) {
     $defaults.LogPath
 }
 
+# CompanyDomain
+$finalCompanyDomain = if ($PSBoundParameters.ContainsKey('CompanyDomain')) {
+    Write-Log "CompanyDomain overridden by CLI parameter: $CompanyDomain"
+    $CompanyDomain
+} elseif ($config.ContainsKey('companyDomain')) {
+    $config['companyDomain']
+} else {
+    $defaults.CompanyDomain
+}
+
 # ==================================================
 # Initialize log file
 # ==================================================
@@ -224,6 +236,7 @@ Write-Log "  Days Back:    $finalDaysBack"
 Write-Log "  Days Forward: $finalDaysForward"
 Write-Log "  Output Path:  $finalOutputPath"
 Write-Log "  Log Path:     $finalLogPath"
+Write-Log "  Company Dom:  $finalCompanyDomain"
 Write-Log "-------------------------------"
 
 # ==================================================
@@ -380,7 +393,7 @@ function Get-OrganizerDomain {
         MAPI properties, Organizer/SenderEmailAddress strings, and Recipients
         collection lookup.
     #>
-    param($Item, $Namespace)
+    param($Item, $Namespace, [string]$CompanyDomain)
 
     $ErrorActionPreference = "Continue"
 
@@ -501,6 +514,14 @@ function Get-OrganizerDomain {
         return $Matches[1].ToLower()
     }
 
+    # If organizer is EX-type (internal Exchange), use configured company domain
+    $isInternal = $diagInfo["GetOrganizer.Type"] -eq "EX"
+    if ($isInternal -and $CompanyDomain) {
+        $organizerName = $diagInfo["GetOrganizer.Name"]
+        Write-Log "  -> Organizer '$organizerName' is internal (EX-type), using company domain: $CompanyDomain" -Level Warning
+        return $CompanyDomain.ToLower()
+    }
+
     # Log all diagnostic info so we can see what Outlook actually returned
     $diagParts = @()
     foreach ($key in $diagInfo.Keys | Sort-Object) {
@@ -523,21 +544,29 @@ function Get-AttendeeDomains {
         occurrence items where Recipients is empty, retrieves the master
         appointment item via Namespace.GetItemFromID() to access its Recipients.
     #>
-    param($Item, $Namespace)
+    param($Item, $Namespace, [string]$CompanyDomain)
 
     $ErrorActionPreference = "Continue"
 
     $domains = @()
     $totalCount = 0
 
-    # First, try to get attendee count from string properties (always available,
-    # even when the Recipients COM collection is inaccessible).
+    # Get attendee names from string properties (always available, even on occurrences)
+    $attendeeNames = @()
     $fallbackCount = 0
     try {
         $reqStr = $Item.RequiredAttendees
         $optStr = $Item.OptionalAttendees
-        if ($reqStr) { $fallbackCount += ($reqStr -split ";").Where({ $_.Trim() -ne "" }).Count }
-        if ($optStr) { $fallbackCount += ($optStr -split ";").Where({ $_.Trim() -ne "" }).Count }
+        Write-Log "  -> Attendees raw: Required='$reqStr' Optional='$optStr'"
+        if ($reqStr) {
+            $names = ($reqStr -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() }
+            $attendeeNames += $names
+        }
+        if ($optStr) {
+            $names = ($optStr -split ";").Where({ $_.Trim() -ne "" }) | ForEach-Object { $_.Trim() }
+            $attendeeNames += $names
+        }
+        $fallbackCount = $attendeeNames.Count
     } catch {
         Write-Log "  -> WARNING: Could not read attendee string properties: $($_.Exception.Message)" -Level Warning
     }
@@ -565,8 +594,30 @@ function Get-AttendeeDomains {
     try {
         $recipients = $workItem.Recipients
         if (-not $recipients -or $recipients.Count -eq 0) {
-            Write-Log "  -> Attendees: Recipients collection empty/null (fallbackCount=$fallbackCount)" -Level Warning
-            return @{ count = $fallbackCount; domains = @() }
+            # Recipients collection unavailable — resolve attendee names via CreateRecipient
+            if ($attendeeNames.Count -gt 0 -and $Namespace) {
+                Write-Log "  -> Attendees: Recipients empty, resolving $($attendeeNames.Count) names via CreateRecipient..."
+                $totalCount = $attendeeNames.Count
+                foreach ($name in $attendeeNames) {
+                    $smtpAddress = Resolve-SmtpAddress -AddressEntry $null -DisplayName $name -Namespace $Namespace
+                    if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
+                        $domains += $Matches[1].ToLower()
+                        Write-Log "  -> Attendee: '$name' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
+                    } elseif ($CompanyDomain) {
+                        # If CreateRecipient can't resolve, assume internal company domain
+                        $domains += $CompanyDomain.ToLower()
+                        Write-Log "  -> Attendee: '$name' unresolved, using company domain: $CompanyDomain" -Level Warning
+                    } else {
+                        Write-Log "  -> Attendee: '$name' could not be resolved" -Level Warning
+                    }
+                }
+            } else {
+                Write-Log "  -> Attendees: Recipients collection empty/null and no attendee names available" -Level Warning
+                return @{ count = $fallbackCount; domains = @() }
+            }
+
+            $uniqueDomains = @($domains | Sort-Object -Unique)
+            return @{ count = $totalCount; domains = $uniqueDomains }
         }
 
         $totalCount = $recipients.Count
@@ -759,7 +810,7 @@ while ($item -ne $null) {
             end             = $item.End.ToString("yyyy-MM-ddTHH:mm:ss")
             endTimeZone     = $endTz
             location        = if ($item.Location) { $item.Location } else { $null }
-            organizerDomain  = Get-OrganizerDomain -Item $item -Namespace $namespace
+            organizerDomain  = Get-OrganizerDomain -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain
             attendeeCount    = 0
             attendeeDomains  = @()
             busyStatus       = $busyText
@@ -769,7 +820,7 @@ while ($item -ne $null) {
         }
 
         # Extract attendee domains (unique, no names or emails — just domains)
-        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace
+        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain
         $entry["attendeeCount"] = $attendeeInfo.count
         $entry["attendeeDomains"] = $attendeeInfo.domains
         if ($attendeeInfo.count -gt 0) {

@@ -3,6 +3,7 @@
   "daysForward": 90,
   "outputPath": "./output/calendar-export.json",
   "logPath": "./logs/",
+  "companyDomain": "mycompany.com",
   "changesOutputPath": "./output/calendar-changes.json",
   "lastRunPath": "./output/last-run.json",
   "runHistoryPath": "./output/run-history.csv",
