@@ -793,25 +793,14 @@ Write-Log "  Range end:   $($rangeEnd.ToString('yyyy-MM-dd'))"
 $filter = "[Start] >= '$($rangeStart.ToString("MM/dd/yyyy HH:mm"))' AND [Start] < '$($rangeEnd.ToString("MM/dd/yyyy HH:mm"))'"
 Write-Log "  Outlook filter: $filter"
 
-# IMPORTANT: The order of operations matters for Outlook COM recurring item expansion.
-# You MUST: (1) Sort by [Start], (2) Set IncludeRecurrences = $true, (3) Apply Restrict().
-# If you change this order, recurring items will not be expanded into individual occurrences.
-Write-Log "Setting up item collection with IncludeRecurrences..."
-$items = $calendarFolder.Items
-$items.Sort("[Start]")
-$items.IncludeRecurrences = $true
-$filteredItems = $items.Restrict($filter)
-Write-Log "Item filter applied. Beginning enumeration..." -Level Success
-
 # ==================================================
 # Step 4b: Build item cache with full recipient data
 # ==================================================
-# When IncludeRecurrences is set on the Items collection, ALL items (including
-# non-recurring) are returned as lightweight objects with no Recipients,
-# RequiredAttendees, or OptionalAttendees. To get attendee data, we read the
-# calendar folder a second time WITHOUT IncludeRecurrences and cache items
-# that have Recipients, keyed by subject.
-Write-Log "Building item cache for attendee resolution (without IncludeRecurrences)..."
+# IMPORTANT: This MUST run BEFORE IncludeRecurrences is set on any Items
+# collection. Outlook COM may share the underlying collection object, so
+# once IncludeRecurrences = $true is set, ALL subsequent Items from the
+# same folder return lightweight objects with no Recipients data.
+Write-Log "Building item cache for attendee resolution (before IncludeRecurrences)..."
 $script:masterRecipientCache = @{}
 try {
     $cacheItems = $calendarFolder.Items
@@ -821,6 +810,7 @@ try {
 
     $cacheItem = $cacheFiltered.GetFirst()
     $cacheCount = 0
+    $cacheNoRecip = 0
     while ($cacheItem -ne $null) {
         try {
             $subj = if ($cacheItem.Subject) { $cacheItem.Subject } else { "" }
@@ -830,15 +820,30 @@ try {
                 if ($recipCount -gt 0) {
                     $script:masterRecipientCache[$subj] = $cacheItem
                     $cacheCount++
+                } else {
+                    $cacheNoRecip++
                 }
             }
         } catch {}
         $cacheItem = $cacheFiltered.GetNext()
     }
-    Write-Log "Cached $cacheCount items with recipients." -Level Success
+    Write-Log "Cached $cacheCount items with recipients ($cacheNoRecip items had no recipients)." -Level Success
 } catch {
     Write-Log "WARNING: Failed to build item cache: $($_.Exception.Message)" -Level Warning
 }
+
+# ==================================================
+# Step 4c: Set up item collection with IncludeRecurrences
+# ==================================================
+# IMPORTANT: The order of operations matters for Outlook COM recurring item expansion.
+# You MUST: (1) Sort by [Start], (2) Set IncludeRecurrences = $true, (3) Apply Restrict().
+# If you change this order, recurring items will not be expanded into individual occurrences.
+Write-Log "Setting up item collection with IncludeRecurrences..."
+$items = $calendarFolder.Items
+$items.Sort("[Start]")
+$items.IncludeRecurrences = $true
+$filteredItems = $items.Restrict($filter)
+Write-Log "Item filter applied. Beginning enumeration..." -Level Success
 
 # ==================================================
 # Step 5: Extract calendar entries
