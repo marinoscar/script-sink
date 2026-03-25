@@ -583,6 +583,7 @@ function Get-AttendeeDomains {
             # Extract domain
             if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
                 $domains += $Matches[1].ToLower()
+                Write-Log "  -> Attendee [$i/$($recipients.Count)]: '$($recipient.Name)' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
             } else {
                 # Track unresolved recipients for diagnostic logging
                 $parts = @()
