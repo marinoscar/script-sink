@@ -266,13 +266,13 @@ function Resolve-SmtpAddress {
         1. ExchangeUser → PrimarySmtpAddress
         2. Direct Address if SMTP type or contains @
         3. PR_SMTP_ADDRESS via PropertyAccessor (0x39FE001F)
-        4. Session.CreateRecipient() re-resolve by display name
-        5. Session.CreateRecipient() re-resolve by X500 address
+        4. Namespace.CreateRecipient() re-resolve by display name
+        5. Namespace.CreateRecipient() re-resolve by X500 address
     #>
     param(
         [object]$AddressEntry,
         [string]$DisplayName,
-        [object]$Session
+        [object]$Namespace
     )
 
     $ErrorActionPreference = "Continue"
@@ -306,11 +306,11 @@ function Resolve-SmtpAddress {
         } catch {}
     }
 
-    # Try 4: Re-resolve by display name via Session.CreateRecipient()
+    # Try 4: Re-resolve by display name via Namespace.CreateRecipient()
     # This forces Outlook to do a fresh address book lookup
-    if ($Session -and $DisplayName) {
+    if ($Namespace -and $DisplayName) {
         try {
-            $resolvedRecip = $Session.CreateRecipient($DisplayName)
+            $resolvedRecip = $Namespace.CreateRecipient($DisplayName)
             $resolvedRecip.Resolve()
             if ($resolvedRecip.Resolved) {
                 $ae = $resolvedRecip.AddressEntry
@@ -339,11 +339,11 @@ function Resolve-SmtpAddress {
     }
 
     # Try 5: Re-resolve by the X500 address itself via CreateRecipient()
-    if ($Session -and $AddressEntry -and $AddressEntry.Type -eq "EX") {
+    if ($Namespace -and $AddressEntry -and $AddressEntry.Type -eq "EX") {
         try {
             $x500Addr = $AddressEntry.Address
             if ($x500Addr) {
-                $resolvedRecip = $Session.CreateRecipient($x500Addr)
+                $resolvedRecip = $Namespace.CreateRecipient($x500Addr)
                 $resolvedRecip.Resolve()
                 if ($resolvedRecip.Resolved) {
                     $ae = $resolvedRecip.AddressEntry
@@ -380,14 +380,12 @@ function Get-OrganizerDomain {
         MAPI properties, Organizer/SenderEmailAddress strings, and Recipients
         collection lookup.
     #>
-    param($Item)
+    param($Item, $Namespace)
 
     $ErrorActionPreference = "Continue"
 
     $smtpAddress = $null
     $diagInfo = @{}
-    $session = $null
-    try { $session = $Item.Session } catch {}
 
     # Try 1: GetOrganizer() → Resolve-SmtpAddress
     try {
@@ -397,7 +395,7 @@ function Get-OrganizerDomain {
             $diagInfo["GetOrganizer.Address"] = $addressEntry.Address
             $diagInfo["GetOrganizer.Name"] = $addressEntry.Name
 
-            $smtpAddress = Resolve-SmtpAddress -AddressEntry $addressEntry -DisplayName $addressEntry.Name -Session $session
+            $smtpAddress = Resolve-SmtpAddress -AddressEntry $addressEntry -DisplayName $addressEntry.Name -Namespace $Namespace
             if ($smtpAddress) { $diagInfo["ResolvedVia"] = "GetOrganizer.Resolve" }
         } else {
             $diagInfo["GetOrganizer"] = "returned null"
@@ -463,15 +461,16 @@ function Get-OrganizerDomain {
         }
     }
 
-    # Try 6: Resolve organizer via Session.CreateRecipient() using display name
+    # Try 6: Resolve organizer via Namespace.CreateRecipient() using display name
     # (handles EX-type addresses where GetOrganizer's AddressEntry is stale)
-    if (-not $smtpAddress -and $session) {
+    if (-not $smtpAddress -and $Namespace) {
         $displayName = $diagInfo["GetOrganizer.Name"]
         if (-not $displayName) { try { $displayName = $Item.Organizer } catch {} }
         if ($displayName) {
-            $smtpAddress = Resolve-SmtpAddress -AddressEntry $null -DisplayName $displayName -Session $session
-            if ($smtpAddress) { $diagInfo["ResolvedVia"] = "Session.CreateRecipient(Name)" }
+            $smtpAddress = Resolve-SmtpAddress -AddressEntry $null -DisplayName $displayName -Namespace $Namespace
+            if ($smtpAddress) { $diagInfo["ResolvedVia"] = "Namespace.CreateRecipient(Name)" }
         }
+        if (-not $smtpAddress) { $diagInfo["CreateRecipient.Name"] = "failed for '$displayName'" }
     }
 
     # Try 7: Match organizer in Recipients collection and re-resolve
@@ -484,7 +483,7 @@ function Get-OrganizerDomain {
                 for ($i = 1; $i -le $recipients.Count; $i++) {
                     $recip = $recipients.Item($i)
                     if ($recip.Name -eq $organizer) {
-                        $smtpAddress = Resolve-SmtpAddress -AddressEntry $recip.AddressEntry -DisplayName $recip.Name -Session $session
+                        $smtpAddress = Resolve-SmtpAddress -AddressEntry $recip.AddressEntry -DisplayName $recip.Name -Namespace $Namespace
                         if ($smtpAddress) {
                             $diagInfo["ResolvedVia"] = "Recipients.Resolve"
                             break
@@ -520,14 +519,12 @@ function Get-AttendeeDomains {
         Also returns the total attendee count for context on meeting size.
 
         Iterates through the item's Recipients collection and resolves each
-        recipient's SMTP address using multiple fallback approaches, then
-        extracts the domain portion.
+        recipient's SMTP address via Resolve-SmtpAddress. For recurring
+        occurrence items where Recipients is empty, retrieves the master
+        appointment item via Namespace.GetItemFromID() to access its Recipients.
     #>
-    param($Item)
+    param($Item, $Namespace)
 
-    # Prevent $ErrorActionPreference = "Stop" from promoting COM warnings to
-    # terminating exceptions — COM operations emit non-terminating errors that
-    # are expected and handled via individual try/catch blocks below.
     $ErrorActionPreference = "Continue"
 
     $domains = @()
@@ -545,11 +542,28 @@ function Get-AttendeeDomains {
         Write-Log "  -> WARNING: Could not read attendee string properties: $($_.Exception.Message)" -Level Warning
     }
 
-    $session = $null
-    try { $session = $Item.Session } catch {}
-
+    # Determine which item to read Recipients from — occurrence items from
+    # IncludeRecurrences may have an empty Recipients collection, so we
+    # fall back to the master appointment via GetItemFromID().
+    $workItem = $Item
     try {
         $recipients = $Item.Recipients
+        if ((-not $recipients -or $recipients.Count -eq 0) -and $Namespace) {
+            Write-Log "  -> Attendees: Recipients empty on item, trying master item via GetItemFromID..."
+            try {
+                $masterItem = $Namespace.GetItemFromID($Item.EntryID)
+                if ($masterItem -and $masterItem.Recipients -and $masterItem.Recipients.Count -gt 0) {
+                    $workItem = $masterItem
+                    Write-Log "  -> Attendees: Master item has $($masterItem.Recipients.Count) recipients"
+                }
+            } catch {
+                Write-Log "  -> Attendees: GetItemFromID failed: $($_.Exception.Message)" -Level Warning
+            }
+        }
+    } catch {}
+
+    try {
+        $recipients = $workItem.Recipients
         if (-not $recipients -or $recipients.Count -eq 0) {
             Write-Log "  -> Attendees: Recipients collection empty/null (fallbackCount=$fallbackCount)" -Level Warning
             return @{ count = $fallbackCount; domains = @() }
@@ -574,16 +588,16 @@ function Get-AttendeeDomains {
                 $recipDiag["Name"] = $recipient.Name
             }
 
-            # Use Resolve-SmtpAddress which handles EX-type via Session.CreateRecipient()
+            # Use Resolve-SmtpAddress which handles EX-type via Namespace.CreateRecipient()
             try {
                 $ae = $recipient.AddressEntry
-                $smtpAddress = Resolve-SmtpAddress -AddressEntry $ae -DisplayName $recipient.Name -Session $session
+                $smtpAddress = Resolve-SmtpAddress -AddressEntry $ae -DisplayName $recipient.Name -Namespace $Namespace
             } catch {}
 
             # Extract domain
             if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
                 $domains += $Matches[1].ToLower()
-                Write-Log "  -> Attendee [$i/$($recipients.Count)]: '$($recipient.Name)' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
+                Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
             } else {
                 # Track unresolved recipients for diagnostic logging
                 $parts = @()
@@ -745,7 +759,7 @@ while ($item -ne $null) {
             end             = $item.End.ToString("yyyy-MM-ddTHH:mm:ss")
             endTimeZone     = $endTz
             location        = if ($item.Location) { $item.Location } else { $null }
-            organizerDomain  = Get-OrganizerDomain -Item $item
+            organizerDomain  = Get-OrganizerDomain -Item $item -Namespace $namespace
             attendeeCount    = 0
             attendeeDomains  = @()
             busyStatus       = $busyText
@@ -755,7 +769,7 @@ while ($item -ne $null) {
         }
 
         # Extract attendee domains (unique, no names or emails — just domains)
-        $attendeeInfo = Get-AttendeeDomains -Item $item
+        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace
         $entry["attendeeCount"] = $attendeeInfo.count
         $entry["attendeeDomains"] = $attendeeInfo.domains
         if ($attendeeInfo.count -gt 0) {
