@@ -544,12 +544,51 @@ function Get-AttendeeDomains {
         occurrence items where Recipients is empty, retrieves the master
         appointment item via Namespace.GetItemFromID() to access its Recipients.
     #>
-    param($Item, $Namespace, [string]$CompanyDomain)
+    param($Item, $Namespace, [string]$CompanyDomain, $MasterCache)
 
     $ErrorActionPreference = "Continue"
 
     $domains = @()
     $totalCount = 0
+
+    # For recurring occurrences, try the master cache first — occurrence items
+    # are lightweight and have no attendee data at all.
+    if ($Item.IsRecurring -and $MasterCache) {
+        $subj = if ($Item.Subject) { $Item.Subject } else { "" }
+        if ($subj -and $MasterCache.ContainsKey($subj)) {
+            Write-Log "  -> Attendees: Using cached master item for '$subj'"
+            $masterItem = $MasterCache[$subj]
+            try {
+                $recipients = $masterItem.Recipients
+                if ($recipients -and $recipients.Count -gt 0) {
+                    $totalCount = $recipients.Count
+                    $unresolvedRecips = @()
+                    for ($i = 1; $i -le $recipients.Count; $i++) {
+                        $recipient = $recipients.Item($i)
+                        $smtpAddress = $null
+                        try {
+                            $ae = $recipient.AddressEntry
+                            $smtpAddress = Resolve-SmtpAddress -AddressEntry $ae -DisplayName $recipient.Name -Namespace $Namespace
+                        } catch {}
+
+                        if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
+                            $domains += $Matches[1].ToLower()
+                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' resolved to '$smtpAddress' -> domain '$($Matches[1].ToLower())'"
+                        } elseif ($CompanyDomain) {
+                            $domains += $CompanyDomain.ToLower()
+                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' unresolved, using company domain: $CompanyDomain" -Level Warning
+                        } else {
+                            Write-Log "  -> Attendee [$i/$totalCount]: '$($recipient.Name)' could not be resolved" -Level Warning
+                        }
+                    }
+                    $uniqueDomains = @($domains | Sort-Object -Unique)
+                    return @{ count = $totalCount; domains = $uniqueDomains }
+                }
+            } catch {
+                Write-Log "  -> Attendees: Master cache item failed: $($_.Exception.Message)" -Level Warning
+            }
+        }
+    }
 
     # Get attendee names from string properties (always available, even on occurrences)
     $attendeeNames = @()
@@ -765,6 +804,44 @@ $filteredItems = $items.Restrict($filter)
 Write-Log "Item filter applied. Beginning enumeration..." -Level Success
 
 # ==================================================
+# Step 4b: Build master recurring item cache
+# ==================================================
+# Occurrence items from IncludeRecurrences are lightweight — they have no
+# Recipients, RequiredAttendees, or OptionalAttendees. To get attendee data
+# for recurring meetings, we pre-cache the master series items (which have
+# full recipient data) by reading the calendar folder WITHOUT IncludeRecurrences.
+Write-Log "Building master recurring item cache for attendee resolution..."
+$script:masterRecipientCache = @{}
+try {
+    $masterItems = $calendarFolder.Items
+    $masterItems.Sort("[Start]")
+    # Do NOT set IncludeRecurrences — we want master series items only
+    $masterFiltered = $masterItems.Restrict($filter)
+
+    $masterItem = $masterFiltered.GetFirst()
+    $cacheCount = 0
+    while ($masterItem -ne $null) {
+        try {
+            if ($masterItem.IsRecurring) {
+                $subj = if ($masterItem.Subject) { $masterItem.Subject } else { "" }
+                if ($subj -and -not $script:masterRecipientCache.ContainsKey($subj)) {
+                    $recipCount = 0
+                    try { $recipCount = $masterItem.Recipients.Count } catch {}
+                    if ($recipCount -gt 0) {
+                        $script:masterRecipientCache[$subj] = $masterItem
+                        $cacheCount++
+                    }
+                }
+            }
+        } catch {}
+        $masterItem = $masterFiltered.GetNext()
+    }
+    Write-Log "Cached $cacheCount recurring master items with recipients." -Level Success
+} catch {
+    Write-Log "WARNING: Failed to build master item cache: $($_.Exception.Message)" -Level Warning
+}
+
+# ==================================================
 # Step 5: Extract calendar entries
 # ==================================================
 $entries = @()
@@ -820,7 +897,7 @@ while ($item -ne $null) {
         }
 
         # Extract attendee domains (unique, no names or emails — just domains)
-        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain
+        $attendeeInfo = Get-AttendeeDomains -Item $item -Namespace $namespace -CompanyDomain $finalCompanyDomain -MasterCache $script:masterRecipientCache
         $entry["attendeeCount"] = $attendeeInfo.count
         $entry["attendeeDomains"] = $attendeeInfo.domains
         if ($attendeeInfo.count -gt 0) {
