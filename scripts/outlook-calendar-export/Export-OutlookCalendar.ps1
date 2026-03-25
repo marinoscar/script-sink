@@ -255,6 +255,120 @@ $recurrenceTypeMap = @{
     6 = "YearlyNth"
 }
 
+function Resolve-SmtpAddress {
+    <#
+    .SYNOPSIS
+        Resolves an SMTP email address from an Outlook AddressEntry or display name.
+        Handles EX-type (Exchange internal X500) addresses where GetExchangeUser()
+        may fail with E_ABORT and PropertyAccessor may be null.
+
+        Resolution order:
+        1. ExchangeUser → PrimarySmtpAddress
+        2. Direct Address if SMTP type or contains @
+        3. PR_SMTP_ADDRESS via PropertyAccessor (0x39FE001F)
+        4. Session.CreateRecipient() re-resolve by display name
+        5. Session.CreateRecipient() re-resolve by X500 address
+    #>
+    param(
+        [object]$AddressEntry,
+        [string]$DisplayName,
+        [object]$Session
+    )
+
+    $ErrorActionPreference = "Continue"
+
+    # Try 1: ExchangeUser → PrimarySmtpAddress
+    if ($AddressEntry) {
+        try {
+            $exchUser = $AddressEntry.GetExchangeUser()
+            if ($exchUser -and $exchUser.PrimarySmtpAddress) {
+                return $exchUser.PrimarySmtpAddress
+            }
+        } catch {}
+
+        # Try 2: Direct address if SMTP type or contains @
+        try {
+            if ($AddressEntry.Address) {
+                if ($AddressEntry.Type -eq "SMTP") {
+                    return $AddressEntry.Address
+                } elseif ($AddressEntry.Address -match "@") {
+                    return $AddressEntry.Address
+                }
+            }
+        } catch {}
+
+        # Try 3: PropertyAccessor PR_SMTP_ADDRESS
+        try {
+            if ($AddressEntry.PropertyAccessor) {
+                $prop = $AddressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                if ($prop) { return $prop }
+            }
+        } catch {}
+    }
+
+    # Try 4: Re-resolve by display name via Session.CreateRecipient()
+    # This forces Outlook to do a fresh address book lookup
+    if ($Session -and $DisplayName) {
+        try {
+            $resolvedRecip = $Session.CreateRecipient($DisplayName)
+            $resolvedRecip.Resolve()
+            if ($resolvedRecip.Resolved) {
+                $ae = $resolvedRecip.AddressEntry
+                if ($ae) {
+                    try {
+                        $eu = $ae.GetExchangeUser()
+                        if ($eu -and $eu.PrimarySmtpAddress) {
+                            return $eu.PrimarySmtpAddress
+                        }
+                    } catch {}
+                    try {
+                        if ($ae.PropertyAccessor) {
+                            $prop = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                            if ($prop) { return $prop }
+                        }
+                    } catch {}
+                    # Last resort: if the resolved entry is SMTP type
+                    try {
+                        if ($ae.Type -eq "SMTP" -and $ae.Address) {
+                            return $ae.Address
+                        }
+                    } catch {}
+                }
+            }
+        } catch {}
+    }
+
+    # Try 5: Re-resolve by the X500 address itself via CreateRecipient()
+    if ($Session -and $AddressEntry -and $AddressEntry.Type -eq "EX") {
+        try {
+            $x500Addr = $AddressEntry.Address
+            if ($x500Addr) {
+                $resolvedRecip = $Session.CreateRecipient($x500Addr)
+                $resolvedRecip.Resolve()
+                if ($resolvedRecip.Resolved) {
+                    $ae = $resolvedRecip.AddressEntry
+                    if ($ae) {
+                        try {
+                            $eu = $ae.GetExchangeUser()
+                            if ($eu -and $eu.PrimarySmtpAddress) {
+                                return $eu.PrimarySmtpAddress
+                            }
+                        } catch {}
+                        try {
+                            if ($ae.PropertyAccessor) {
+                                $prop = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                                if ($prop) { return $prop }
+                            }
+                        } catch {}
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    return $null
+}
+
 function Get-OrganizerDomain {
     <#
     .SYNOPSIS
@@ -262,26 +376,20 @@ function Get-OrganizerDomain {
         No names or email usernames are returned — only the domain portion,
         to avoid persisting sensitive/personal information.
 
-        Tries multiple approaches to resolve the SMTP address:
-        1. GetOrganizer() → ExchangeUser → PrimarySmtpAddress
-        2. GetOrganizer() → direct Address (SMTP type) or PropertyAccessor
-        3. MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS property
-        4. MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS property
-        5. Organizer string property (may contain email)
-        6. SenderEmailAddress property
-        7. Match organizer name in Recipients collection → resolve SMTP
+        Uses Resolve-SmtpAddress for address resolution, then falls back to
+        MAPI properties, Organizer/SenderEmailAddress strings, and Recipients
+        collection lookup.
     #>
     param($Item)
 
-    # Prevent $ErrorActionPreference = "Stop" from promoting COM warnings to
-    # terminating exceptions inside this function.
     $ErrorActionPreference = "Continue"
 
     $smtpAddress = $null
-    # Collect diagnostic info for logging when all methods fail
     $diagInfo = @{}
+    $session = $null
+    try { $session = $Item.Session } catch {}
 
-    # Try 1: GetOrganizer() → ExchangeUser (most reliable for Exchange/O365 accounts)
+    # Try 1: GetOrganizer() → Resolve-SmtpAddress
     try {
         $addressEntry = $Item.GetOrganizer()
         if ($addressEntry) {
@@ -289,41 +397,8 @@ function Get-OrganizerDomain {
             $diagInfo["GetOrganizer.Address"] = $addressEntry.Address
             $diagInfo["GetOrganizer.Name"] = $addressEntry.Name
 
-            # For Exchange users, get the SMTP address from the ExchangeUser object
-            try {
-                $exchUser = $addressEntry.GetExchangeUser()
-                if ($exchUser -and $exchUser.PrimarySmtpAddress) {
-                    $smtpAddress = $exchUser.PrimarySmtpAddress
-                    $diagInfo["ResolvedVia"] = "GetOrganizer.ExchangeUser"
-                }
-            } catch {
-                $diagInfo["ExchangeUser.Error"] = $_.Exception.Message
-            }
-
-            # If ExchangeUser didn't work, try the address directly (works for SMTP type)
-            if (-not $smtpAddress -and $addressEntry.Address) {
-                if ($addressEntry.Type -eq "SMTP") {
-                    $smtpAddress = $addressEntry.Address
-                    $diagInfo["ResolvedVia"] = "GetOrganizer.SMTP"
-                } elseif ($addressEntry.Address -match "@") {
-                    # Some address types (e.g. "EX") may still have an SMTP-style address
-                    $smtpAddress = $addressEntry.Address
-                    $diagInfo["ResolvedVia"] = "GetOrganizer.Address(@)"
-                }
-            }
-
-            # Try PropertyAccessor on the AddressEntry for the SMTP address
-            if (-not $smtpAddress) {
-                try {
-                    $prop = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
-                    if ($prop) {
-                        $smtpAddress = $prop
-                        $diagInfo["ResolvedVia"] = "GetOrganizer.PropertyAccessor"
-                    }
-                } catch {
-                    $diagInfo["GetOrganizer.PA.Error"] = $_.Exception.Message
-                }
-            }
+            $smtpAddress = Resolve-SmtpAddress -AddressEntry $addressEntry -DisplayName $addressEntry.Name -Session $session
+            if ($smtpAddress) { $diagInfo["ResolvedVia"] = "GetOrganizer.Resolve" }
         } else {
             $diagInfo["GetOrganizer"] = "returned null"
         }
@@ -344,7 +419,7 @@ function Get-OrganizerDomain {
         }
     }
 
-    # Try 3: MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS (may be X500 for Exchange, or SMTP)
+    # Try 3: MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS (may be X500 or SMTP)
     if (-not $smtpAddress) {
         try {
             $addr = $Item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0065001F")
@@ -358,7 +433,7 @@ function Get-OrganizerDomain {
         }
     }
 
-    # Try 4: Organizer property — plain string, may contain an email address
+    # Try 4: Organizer string property (may contain email)
     if (-not $smtpAddress) {
         try {
             $organizer = $Item.Organizer
@@ -371,11 +446,10 @@ function Get-OrganizerDomain {
             $diagInfo["Item.Organizer.Error"] = $_.Exception.Message
         }
     } else {
-        # Still capture organizer name for diagnostics even if already resolved
         try { $diagInfo["Item.Organizer"] = $Item.Organizer } catch {}
     }
 
-    # Try 5: SenderEmailAddress property (available on received meeting requests)
+    # Try 5: SenderEmailAddress property
     if (-not $smtpAddress) {
         try {
             $senderEmail = $Item.SenderEmailAddress
@@ -389,41 +463,32 @@ function Get-OrganizerDomain {
         }
     }
 
-    # Try 6: Resolve organizer name via Recipients collection — the organizer
-    # is typically the first recipient with type olOrganizer (0) or we can match
-    # by the Organizer display name.
+    # Try 6: Resolve organizer via Session.CreateRecipient() using display name
+    # (handles EX-type addresses where GetOrganizer's AddressEntry is stale)
+    if (-not $smtpAddress -and $session) {
+        $displayName = $diagInfo["GetOrganizer.Name"]
+        if (-not $displayName) { try { $displayName = $Item.Organizer } catch {} }
+        if ($displayName) {
+            $smtpAddress = Resolve-SmtpAddress -AddressEntry $null -DisplayName $displayName -Session $session
+            if ($smtpAddress) { $diagInfo["ResolvedVia"] = "Session.CreateRecipient(Name)" }
+        }
+    }
+
+    # Try 7: Match organizer in Recipients collection and re-resolve
     if (-not $smtpAddress) {
         try {
             $organizer = $Item.Organizer
+            if (-not $organizer) { $organizer = $diagInfo["GetOrganizer.Name"] }
             $recipients = $Item.Recipients
             if ($organizer -and $recipients) {
                 for ($i = 1; $i -le $recipients.Count; $i++) {
                     $recip = $recipients.Item($i)
                     if ($recip.Name -eq $organizer) {
-                        $diagInfo["Recip.Match.Type"] = $recip.AddressEntry.Type
-                        $diagInfo["Recip.Match.Address"] = $recip.AddressEntry.Address
-                        try {
-                            $ae = $recip.AddressEntry
-                            if ($ae) {
-                                try {
-                                    $eu = $ae.GetExchangeUser()
-                                    if ($eu -and $eu.PrimarySmtpAddress) {
-                                        $smtpAddress = $eu.PrimarySmtpAddress
-                                        $diagInfo["ResolvedVia"] = "Recipients.ExchangeUser"
-                                    }
-                                } catch {}
-                                if (-not $smtpAddress) {
-                                    try {
-                                        $prop = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
-                                        if ($prop) {
-                                            $smtpAddress = $prop
-                                            $diagInfo["ResolvedVia"] = "Recipients.PropertyAccessor"
-                                        }
-                                    } catch {}
-                                }
-                            }
-                        } catch {}
-                        if ($smtpAddress) { break }
+                        $smtpAddress = Resolve-SmtpAddress -AddressEntry $recip.AddressEntry -DisplayName $recip.Name -Session $session
+                        if ($smtpAddress) {
+                            $diagInfo["ResolvedVia"] = "Recipients.Resolve"
+                            break
+                        }
                     }
                 }
             }
@@ -480,6 +545,9 @@ function Get-AttendeeDomains {
         Write-Log "  -> WARNING: Could not read attendee string properties: $($_.Exception.Message)" -Level Warning
     }
 
+    $session = $null
+    try { $session = $Item.Session } catch {}
+
     try {
         $recipients = $Item.Recipients
         if (-not $recipients -or $recipients.Count -eq 0) {
@@ -495,37 +563,21 @@ function Get-AttendeeDomains {
             $smtpAddress = $null
             $recipDiag = @{}
 
-            # Try 1: ExchangeUser → PrimarySmtpAddress
             try {
                 $addressEntry = $recipient.AddressEntry
                 if ($addressEntry) {
                     $recipDiag["Type"] = $addressEntry.Type
                     $recipDiag["Address"] = $addressEntry.Address
                     $recipDiag["Name"] = $recipient.Name
-
-                    try {
-                        $exchUser = $addressEntry.GetExchangeUser()
-                        if ($exchUser -and $exchUser.PrimarySmtpAddress) {
-                            $smtpAddress = $exchUser.PrimarySmtpAddress
-                        }
-                    } catch {}
-
-                    # Try 2: Direct address if SMTP type or contains @
-                    if (-not $smtpAddress -and $addressEntry.Address) {
-                        if ($addressEntry.Type -eq "SMTP") {
-                            $smtpAddress = $addressEntry.Address
-                        } elseif ($addressEntry.Address -match "@") {
-                            $smtpAddress = $addressEntry.Address
-                        }
-                    }
-
-                    # Try 3: PR_SMTP_ADDRESS via PropertyAccessor
-                    if (-not $smtpAddress) {
-                        try {
-                            $smtpAddress = $addressEntry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
-                        } catch {}
-                    }
                 }
+            } catch {
+                $recipDiag["Name"] = $recipient.Name
+            }
+
+            # Use Resolve-SmtpAddress which handles EX-type via Session.CreateRecipient()
+            try {
+                $ae = $recipient.AddressEntry
+                $smtpAddress = Resolve-SmtpAddress -AddressEntry $ae -DisplayName $recipient.Name -Session $session
             } catch {}
 
             # Extract domain
