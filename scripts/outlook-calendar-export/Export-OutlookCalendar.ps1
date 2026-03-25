@@ -265,10 +265,17 @@ function Get-OrganizerDomain {
         Tries multiple approaches to resolve the SMTP address:
         1. GetOrganizer() → ExchangeUser → PrimarySmtpAddress
         2. GetOrganizer() → SMTP address via PropertyAccessor
-        3. MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS property
-        4. MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS property
+        3. MAPI PR_SENT_REPRESENTING_SMTP_ADDRESS property
+        4. MAPI PR_SENT_REPRESENTING_EMAIL_ADDRESS property
+        5. Organizer string property (may contain email)
+        6. SenderEmailAddress property
+        7. Match organizer name in Recipients collection → resolve SMTP
     #>
     param($Item)
+
+    # Prevent $ErrorActionPreference = "Stop" from promoting COM warnings to
+    # terminating exceptions inside this function.
+    $ErrorActionPreference = "Continue"
 
     $smtpAddress = $null
 
@@ -315,11 +322,66 @@ function Get-OrganizerDomain {
         } catch {}
     }
 
+    # Try 4: Organizer property — plain string, may contain an email address
+    if (-not $smtpAddress) {
+        try {
+            $organizer = $Item.Organizer
+            if ($organizer -and $organizer -match "@(.+)$") {
+                $smtpAddress = $organizer
+            }
+        } catch {}
+    }
+
+    # Try 5: SenderEmailAddress property (available on received meeting requests)
+    if (-not $smtpAddress) {
+        try {
+            $senderEmail = $Item.SenderEmailAddress
+            if ($senderEmail -and $senderEmail -match "@") {
+                $smtpAddress = $senderEmail
+            }
+        } catch {}
+    }
+
+    # Try 6: Resolve organizer name via Recipients collection — the organizer
+    # is typically the first recipient with type olOrganizer (0) or we can match
+    # by the Organizer display name.
+    if (-not $smtpAddress) {
+        try {
+            $organizer = $Item.Organizer
+            $recipients = $Item.Recipients
+            if ($organizer -and $recipients) {
+                for ($i = 1; $i -le $recipients.Count; $i++) {
+                    $recip = $recipients.Item($i)
+                    if ($recip.Name -eq $organizer) {
+                        try {
+                            $ae = $recip.AddressEntry
+                            if ($ae) {
+                                try {
+                                    $eu = $ae.GetExchangeUser()
+                                    if ($eu -and $eu.PrimarySmtpAddress) {
+                                        $smtpAddress = $eu.PrimarySmtpAddress
+                                    }
+                                } catch {}
+                                if (-not $smtpAddress) {
+                                    try {
+                                        $smtpAddress = $ae.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001F")
+                                    } catch {}
+                                }
+                            }
+                        } catch {}
+                        if ($smtpAddress) { break }
+                    }
+                }
+            }
+        } catch {}
+    }
+
     # Extract domain from the SMTP address
     if ($smtpAddress -and $smtpAddress -match "@(.+)$") {
         return $Matches[1].ToLower()
     }
 
+    Write-Log "  -> WARNING: Could not resolve organizer domain for item" -Level Warning
     return $null
 }
 
@@ -336,17 +398,35 @@ function Get-AttendeeDomains {
     #>
     param($Item)
 
+    # Prevent $ErrorActionPreference = "Stop" from promoting COM warnings to
+    # terminating exceptions — COM operations emit non-terminating errors that
+    # are expected and handled via individual try/catch blocks below.
+    $ErrorActionPreference = "Continue"
+
     $domains = @()
     $totalCount = 0
+
+    # First, try to get attendee count from string properties (always available,
+    # even when the Recipients COM collection is inaccessible).
+    $fallbackCount = 0
+    try {
+        $reqStr = $Item.RequiredAttendees
+        $optStr = $Item.OptionalAttendees
+        if ($reqStr) { $fallbackCount += ($reqStr -split ";").Where({ $_.Trim() -ne "" }).Count }
+        if ($optStr) { $fallbackCount += ($optStr -split ";").Where({ $_.Trim() -ne "" }).Count }
+    } catch {
+        Write-Log "  -> WARNING: Could not read attendee string properties: $($_.Exception.Message)" -Level Warning
+    }
 
     try {
         $recipients = $Item.Recipients
         if (-not $recipients -or $recipients.Count -eq 0) {
-            return @{ count = 0; domains = @() }
+            return @{ count = $fallbackCount; domains = @() }
         }
 
+        $totalCount = $recipients.Count
+
         for ($i = 1; $i -le $recipients.Count; $i++) {
-            $totalCount++
             $recipient = $recipients.Item($i)
             $smtpAddress = $null
 
@@ -380,7 +460,16 @@ function Get-AttendeeDomains {
                 $domains += $Matches[1].ToLower()
             }
         }
-    } catch {}
+    } catch {
+        Write-Log "  -> WARNING: Could not enumerate Recipients collection: $($_.Exception.Message)" -Level Warning
+        # Fall back to string-based count if Recipients threw
+        if ($totalCount -eq 0) { $totalCount = $fallbackCount }
+    }
+
+    # Use fallback count if Recipients collection was empty but string properties had data
+    if ($totalCount -eq 0 -and $fallbackCount -gt 0) {
+        $totalCount = $fallbackCount
+    }
 
     # Return unique domains sorted, plus the total count
     $uniqueDomains = @($domains | Sort-Object -Unique)

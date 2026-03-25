@@ -99,6 +99,29 @@ Remove-Item .\output\last-run.json
 .\Detect-CalendarChanges.ps1
 ```
 
+### Step 6: Upload changes to Sink API
+
+After detecting changes, upload them to the Sink API for Google Calendar sync:
+
+```powershell
+# Using a CLI token
+.\Upload-CalendarChanges.ps1 -Token "your-sink-token"
+
+# Using the SINK_TOKEN environment variable
+$env:SINK_TOKEN = "your-sink-token"
+.\Upload-CalendarChanges.ps1
+```
+
+This will:
+- Load the changes JSON from `output\calendar-changes.json`
+- POST it to the Sink calendar upload API endpoint
+- Log the server response (upload ID, processed/created/updated/deleted counts)
+- Append a row to `output\upload-history.csv` (viewable in Excel, max 500 rows)
+- Write a log to `logs\upload-YYYYMMDD-HHmmss.log`
+- Skip the upload if there are zero changes (still records in history CSV)
+
+Token resolution order: `-Token` CLI parameter > `SINK_TOKEN` environment variable > error and exit.
+
 ### CLI Parameter Examples
 
 Override any default or config.json value via CLI parameters:
@@ -115,6 +138,12 @@ Override any default or config.json value via CLI parameters:
 
 # Changes: custom paths
 .\Detect-CalendarChanges.ps1 -ExportPath "C:\Exports\my-calendar.json" -ChangesOutputPath "C:\Exports\changes.json"
+
+# Upload: explicit token
+.\Upload-CalendarChanges.ps1 -Token "my-secret-token"
+
+# Upload: custom endpoint and changes file
+.\Upload-CalendarChanges.ps1 -Endpoint "https://custom-host/api/calendar/entries/upload" -ChangesPath "C:\Exports\changes.json"
 ```
 
 ## Configuration
@@ -133,6 +162,9 @@ The `config.json` file is optional. If not present, the script uses built-in def
 | `lastRunPath` | string | `./output/last-run.json` | Changes | Path to the last-run state file (delete to force full run) |
 | `runHistoryPath` | string | `./output/run-history.csv` | Changes | Path to the run history CSV |
 | `runHistoryMaxRows` | integer | `500` | Changes | Maximum rows to keep in the run history CSV |
+| `uploadEndpoint` | string | `https://sink.marin.cr/api/calendar/entries/upload` | Upload | Sink API endpoint for calendar uploads |
+| `uploadHistoryPath` | string | `./output/upload-history.csv` | Upload | Path to the upload history CSV |
+| `uploadHistoryMaxRows` | integer | `500` | Upload | Maximum rows to keep in the upload history CSV |
 
 All paths can be relative (resolved against the script directory) or absolute.
 
@@ -276,6 +308,23 @@ Each run appends a row to `output/run-history.csv` (max 500 rows, oldest trimmed
 | `Duration` | How long the detection took |
 | `Status` | "Success" or error status |
 
+### Upload History CSV
+
+Each upload run appends a row to `output/upload-history.csv` (max 500 rows, oldest trimmed automatically):
+
+| Column | Description |
+|---|---|
+| `RunDate` | When this upload executed |
+| `Endpoint` | API endpoint URL used |
+| `IsFullRun` | Whether the changes came from a full run |
+| `New` / `Modified` / `Deleted` | Change counts from the input file |
+| `HttpStatus` | HTTP response status code (or "N/A" if skipped) |
+| `UploadId` | Server-assigned upload ID |
+| `Processed` / `Created` / `Updated` / `ServerDeleted` | Server-side processing counts |
+| `Duration` | How long the upload took |
+| `Status` | "Success", "Failed", or "Skipped-NoChanges" |
+| `ErrorMessage` | Error details if failed (empty otherwise) |
+
 ### Persistence: last-run.json
 
 The `output/last-run.json` file stores the state needed for change detection:
@@ -293,10 +342,13 @@ To run the export and change detection automatically:
 2. Create a new task with these settings:
    - **Action**: Start a program
    - **Program**: `powershell.exe`
-   - **Arguments**: `-ExecutionPolicy Bypass -Command "& '.\Export-OutlookCalendar.ps1'; & '.\Detect-CalendarChanges.ps1'"`
+   - **Arguments**: `-ExecutionPolicy Bypass -Command "& '.\Export-OutlookCalendar.ps1'; & '.\Detect-CalendarChanges.ps1'; & '.\Upload-CalendarChanges.ps1'"`
    - **Start in**: `C:\path\to\scripts\outlook-calendar-export`
 3. Set your desired trigger (e.g., every morning at 7:00 AM)
 4. Under **Conditions**, uncheck "Start only if the computer is on AC power" if on a laptop
+
+5. For the upload script, set the `SINK_TOKEN` environment variable in the task's **Environment** section, or use `-Token` in the arguments
+6. Ensure the machine has network access to the Sink API endpoint
 
 Note: Outlook Desktop must be running when the scheduled task executes.
 
@@ -310,3 +362,7 @@ Note: Outlook Desktop must be running when the scheduled task executes.
 | Empty results but calendar has items | Check that the date range covers the expected period. Try `-DaysBack 0 -DaysForward 1` to get just today |
 | COM error on specific items | Some corrupted or restricted items may fail. The script logs these and continues. Check the log file for details |
 | Script runs but Outlook prompts for security | Outlook may show a security dialog about programmatic access. Click "Allow" or configure the Trust Center to allow COM access |
+| Upload: "No API token provided" | Set `SINK_TOKEN` environment variable or pass `-Token` parameter. See the [CALENDAR-SYNC.md](https://github.com/marinoscar/sink/blob/main/docs/CALENDAR-SYNC.md) guide for creating a Personal Access Token |
+| Upload: HTTP 401 Unauthorized | Your token has expired or is invalid. Generate a new PAT via the Sink API |
+| Upload: HTTP 413 or timeout | The changes file may be too large. Try running more frequently to reduce the number of changes per upload |
+| Upload: Network/connection error | Verify network access to the Sink API endpoint. Check firewall, proxy, and DNS settings |

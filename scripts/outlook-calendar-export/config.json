@@ -6,5 +6,8 @@
   "changesOutputPath": "./output/calendar-changes.json",
   "lastRunPath": "./output/last-run.json",
   "runHistoryPath": "./output/run-history.csv",
-  "runHistoryMaxRows": 500
+  "runHistoryMaxRows": 500,
+  "uploadEndpoint": "https://sink.marin.cr/api/calendar/entries/upload",
+  "uploadHistoryPath": "./output/upload-history.csv",
+  "uploadHistoryMaxRows": 500
 }
