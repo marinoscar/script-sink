@@ -68,9 +68,11 @@ param(
     [string]$ConfigPath
 )
 
+$scriptVersion = "1.0.1"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
+Write-Host "Detect-CalendarChanges v$scriptVersion" -ForegroundColor Cyan
 
 # ==================================================
 # Built-in defaults
