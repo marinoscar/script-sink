@@ -67,7 +67,7 @@ param(
     [string]$CompanyDomain
 )
 
-$scriptVersion = "1.0.0"
+$scriptVersion = "1.0.1"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
@@ -521,7 +521,7 @@ function Get-OrganizerDomain {
     $isInternal = $diagInfo["GetOrganizer.Type"] -eq "EX"
     if ($isInternal -and $CompanyDomain) {
         $organizerName = $diagInfo["GetOrganizer.Name"]
-        Write-Log "  -> Organizer '$organizerName' is internal (EX-type), using company domain: $CompanyDomain" -Level Warning
+        Write-Log ('  -> Organizer ''{0}'' is internal (EX-type), using company domain: {1}' -f $organizerName, $CompanyDomain) -Level Warning
         return $CompanyDomain.ToLower()
     }
 
@@ -650,7 +650,7 @@ while ($item -ne $null) {
         # Extract the subject safely (may be null for some items)
         $subject = if ($item.Subject) { $item.Subject } else { "(No Subject)" }
 
-        Write-Log "Processing item [$itemCount]: $subject ($($item.Start.ToString('yyyy-MM-dd HH:mm')))"
+        Write-Log ('Processing item [{0}]: {1} ({2})' -f $itemCount, $subject, $item.Start.ToString('yyyy-MM-dd HH:mm'))
 
         # Map enum values to readable strings
         $busyText = $busyStatusMap[[int]$item.BusyStatus]
@@ -731,7 +731,7 @@ while ($item -ne $null) {
                 }
 
                 $daysText = if ($daysOfWeek.Count -gt 0) { $daysOfWeek -join "," } else { "N/A" }
-                Write-Log "  -> Recurrence: $recTypeText, every $($pattern.Interval) interval(s), days: $daysText"
+                Write-Log ('  -> Recurrence: {0}, every {1} interval(s), days: {2}' -f $recTypeText, $pattern.Interval, $daysText)
             } catch {
                 # Some occurrence items may not cleanly expose the parent recurrence pattern.
                 # This is expected for certain exception occurrences (modified single instances).
@@ -751,7 +751,7 @@ while ($item -ne $null) {
     $item = $filteredItems.GetNext()
 }
 
-Write-Log "Enumeration complete: $($entries.Count) items extracted, $errorCount error(s)." -Level Success
+Write-Log ('Enumeration complete: {0} items extracted, {1} error(s).' -f $entries.Count, $errorCount) -Level Success
 
 # ==================================================
 # Step 6: Build and write JSON output
@@ -771,7 +771,7 @@ $json = $output | ConvertTo-Json -Depth 5 -Compress:$false
 
 Write-Log "Writing JSON to: $finalOutputPath"
 $json | Out-File -FilePath $finalOutputPath -Encoding UTF8
-Write-Log "JSON file written successfully ($([math]::Round((Get-Item $finalOutputPath).Length / 1KB, 1)) KB)." -Level Success
+Write-Log ('JSON file written successfully ({0} KB).' -f [math]::Round((Get-Item $finalOutputPath).Length / 1KB, 1)) -Level Success
 
 # ==================================================
 # Summary

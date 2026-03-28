@@ -52,7 +52,11 @@ Every script must declare a version variable at the top and print it on startup:
 
 The version should also be included in log output where applicable.
 
-**When modifying a script, always increment the version** using semver (MAJOR.MINOR.PATCH):
-- PATCH: bug fixes, minor tweaks
-- MINOR: new features, behavioral changes
-- MAJOR: breaking changes, major rewrites
+**CRITICAL — Version bump is MANDATORY on every commit that touches a script file:**
+1. Before committing any change to a script, increment the `$scriptVersion` / `SCRIPT_VERSION` variable in that script
+2. Use semver (MAJOR.MINOR.PATCH):
+   - PATCH: bug fixes, minor tweaks, encoding fixes, formatting changes
+   - MINOR: new features, behavioral changes
+   - MAJOR: breaking changes, major rewrites
+3. **This applies to ALL changes — no exceptions.** Even whitespace, encoding, or comment-only changes require a PATCH bump
+4. If multiple scripts are modified in one commit, bump each one independently

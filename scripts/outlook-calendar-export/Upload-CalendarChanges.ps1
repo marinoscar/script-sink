@@ -68,7 +68,7 @@ param(
     [string]$ConfigPath
 )
 
-$scriptVersion = "1.0.0"
+$scriptVersion = "1.0.1"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
@@ -259,7 +259,7 @@ try {
     $totalChanges = $newCount + $modifiedCount + $deletedCount
     $payloadSizeKB = [math]::Round($changesRaw.Length / 1KB, 1)
 
-    Write-Log "Changes file loaded ($payloadSizeKB KB)." -Level Success
+    Write-Log ('Changes file loaded ({0} KB).' -f $payloadSizeKB) -Level Success
     Write-Log "  Full run:    $isFullRun"
     Write-Log "  New:         $newCount"
     Write-Log "  Modified:    $modifiedCount"
@@ -284,7 +284,7 @@ $errorMessage = $null
 $runStatus = $null
 
 if ($totalChanges -eq 0) {
-    Write-Log "No changes to upload (0 new, 0 modified, 0 deleted). Skipping API call." -Level Warning
+    Write-Log 'No changes to upload (0 new, 0 modified, 0 deleted). Skipping API call.' -Level Warning
     $runStatus = "Skipped-NoChanges"
 } else {
     # ==================================================
@@ -392,7 +392,7 @@ $historyRow = [PSCustomObject]@{
 
 if (-not (Test-Path $finalUploadHistoryPath)) {
     $historyRow | Export-Csv -Path $finalUploadHistoryPath -NoTypeInformation -Encoding UTF8
-    Write-Log "Upload history CSV created (1/$finalUploadHistoryMaxRows rows)." -Level Success
+    Write-Log ('Upload history CSV created (1/{0} rows).' -f $finalUploadHistoryMaxRows) -Level Success
 } else {
     $historyRow | Export-Csv -Path $finalUploadHistoryPath -NoTypeInformation -Encoding UTF8 -Append
 
@@ -402,9 +402,9 @@ if (-not (Test-Path $finalUploadHistoryPath)) {
     if ($rowCount -gt $finalUploadHistoryMaxRows) {
         $trimmed = $allRows | Select-Object -Last $finalUploadHistoryMaxRows
         $trimmed | Export-Csv -Path $finalUploadHistoryPath -NoTypeInformation -Encoding UTF8
-        Write-Log "Upload history trimmed from $rowCount to $finalUploadHistoryMaxRows rows (oldest rows removed)." -Level Warning
+        Write-Log ('Upload history trimmed from {0} to {1} rows (oldest rows removed).' -f $rowCount, $finalUploadHistoryMaxRows) -Level Warning
     }
-    Write-Log "Upload history CSV updated ($([math]::Min($rowCount, $finalUploadHistoryMaxRows))/$finalUploadHistoryMaxRows rows)." -Level Success
+    Write-Log ('Upload history CSV updated ({0}/{1} rows).' -f [math]::Min($rowCount, $finalUploadHistoryMaxRows), $finalUploadHistoryMaxRows) -Level Success
 }
 
 # ==================================================
@@ -417,7 +417,7 @@ Write-Host "================================================================" -F
 
 if ($runStatus -eq "Success") {
     Write-Log "Status:          $runStatus"
-    Write-Log "Changes sent:    $totalChanges ($newCount new, $modifiedCount modified, $deletedCount deleted)"
+    Write-Log ('Changes sent:    {0} ({1} new, {2} modified, {3} deleted)' -f $totalChanges, $newCount, $modifiedCount, $deletedCount)
     Write-Log "HTTP Status:     $httpStatus"
     Write-Log "Upload ID:       $uploadId"
     Write-Log "Server stats:    $serverProcessed processed, $serverCreated created, $serverUpdated updated, $serverDeleted deleted"
