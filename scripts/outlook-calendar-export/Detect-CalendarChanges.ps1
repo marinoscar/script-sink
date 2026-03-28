@@ -68,7 +68,7 @@ param(
     [string]$ConfigPath
 )
 
-$scriptVersion = "1.0.3"
+$scriptVersion = "1.0.4"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
