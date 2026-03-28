@@ -403,7 +403,7 @@ $changesOutput = [ordered]@{
 $changesJson = $changesOutput | ConvertTo-Json -Depth 10 -Compress:$false
 $changesJson | Out-File -FilePath $finalChangesOutputPath -Encoding UTF8
 $changesSizeKB = [math]::Round((Get-Item $finalChangesOutputPath).Length / 1024, 1)
-Write-Log "Changes file written `(${changesSizeKB} KB`)." -Level Success
+Write-Log ('Changes file written ({0} KB).' -f $changesSizeKB) -Level Success
 
 # ==================================================
 # Step 5: Update last-run state
@@ -456,7 +456,7 @@ $historyRow = [PSCustomObject]@{
 # If CSV doesn't exist, create it with header
 if (-not (Test-Path $finalRunHistoryPath)) {
     $historyRow | Export-Csv -Path $finalRunHistoryPath -NoTypeInformation -Encoding UTF8
-    Write-Log "Run history CSV created `(1 of ${finalRunHistoryMaxRows} max rows`)." -Level Success
+    Write-Log ('Run history CSV created (1 of {0} max rows).' -f $finalRunHistoryMaxRows) -Level Success
 } else {
     # Append the new row
     $historyRow | Export-Csv -Path $finalRunHistoryPath -NoTypeInformation -Encoding UTF8 -Append
@@ -467,10 +467,10 @@ if (-not (Test-Path $finalRunHistoryPath)) {
     if ($rowCount -gt $finalRunHistoryMaxRows) {
         $trimmed = $allRows | Select-Object -Last $finalRunHistoryMaxRows
         $trimmed | Export-Csv -Path $finalRunHistoryPath -NoTypeInformation -Encoding UTF8
-        Write-Log "Run history trimmed from $rowCount to $finalRunHistoryMaxRows rows `(oldest rows removed`)." -Level Warning
+        Write-Log ('Run history trimmed from {0} to {1} rows (oldest rows removed).' -f $rowCount, $finalRunHistoryMaxRows) -Level Warning
     }
     $displayRows = [math]::Min($rowCount, $finalRunHistoryMaxRows)
-    Write-Log "Run history CSV updated `(${displayRows} of ${finalRunHistoryMaxRows} max rows`)." -Level Success
+    Write-Log ('Run history CSV updated ({0} of {1} max rows).' -f $displayRows, $finalRunHistoryMaxRows) -Level Success
 }
 
 # ==================================================
