@@ -261,7 +261,7 @@ if (-not (Test-Path $finalExportPath)) {
 try {
     $exportRaw = Get-Content -Path $finalExportPath -Raw | ConvertFrom-Json
     $currentEntries = $exportRaw.entries
-    Write-Log "Loaded $($currentEntries.Count) entries from export (exported: $($exportRaw.exportDate))." -Level Success
+    Write-Log ('Loaded {0} entries from export (exported: {1}).' -f $currentEntries.Count, $exportRaw.exportDate) -Level Success
 } catch {
     Write-Log "FATAL: Failed to parse export file: $($_.Exception.Message)" -Level Error
     exit 1
@@ -328,7 +328,7 @@ foreach ($entry in $currentEntries) {
             changeType = "new"
             entry      = $entry
         }
-        Write-Log "  [NEW] $($entry.subject) ($($entry.start))"
+        Write-Log ('  [NEW] {0} ({1})' -f $entry.subject, $entry.start)
     } elseif ($previousIndex[$id] -ne $currentLastMod) {
         # Modified entry — lastModified timestamp differs
         $modifiedCount++
@@ -336,7 +336,7 @@ foreach ($entry in $currentEntries) {
             changeType = "modified"
             entry      = $entry
         }
-        Write-Log "  [MODIFIED] $($entry.subject) ($($entry.start)) — was: $($previousIndex[$id]), now: $currentLastMod"
+        Write-Log ('  [MODIFIED] {0} ({1}) — was: {2}, now: {3}' -f $entry.subject, $entry.start, $previousIndex[$id], $currentLastMod)
     } else {
         # Unchanged
         $unchangedCount++
@@ -368,9 +368,9 @@ foreach ($prevId in $previousIndex.Keys) {
             $summary = $previousSummary[$prevId]
             $deletedEntry["lastKnownSubject"] = $summary.subject
             $deletedEntry["lastKnownStart"] = $summary.start
-            Write-Log "  [DELETED] $($summary.subject) ($($summary.start))"
+            Write-Log ('  [DELETED] {0} ({1})' -f $summary.subject, $summary.start)
         } else {
-            Write-Log "  [DELETED] entryId=$prevId (no prior summary available)"
+            Write-Log ('  [DELETED] entryId={0} (no prior summary available)' -f $prevId)
         }
         $changes += $deletedEntry
     }
@@ -483,7 +483,7 @@ Write-Host "================================================================" -F
 Write-Host "  Change Detection Complete" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Log "Full run:        $isFullRun"
-Write-Log "Changes found:   $($newCount + $modifiedCount + $deletedCount) ($newCount new, $modifiedCount modified, $deletedCount deleted)"
+Write-Log ('Changes found:   {0} ({1} new, {2} modified, {3} deleted)' -f ($newCount + $modifiedCount + $deletedCount), $newCount, $modifiedCount, $deletedCount)
 Write-Log "Unchanged:       $unchangedCount"
 Write-Log "Changes file:    $finalChangesOutputPath"
 Write-Log "Last-run state:  $finalLastRunPath"
