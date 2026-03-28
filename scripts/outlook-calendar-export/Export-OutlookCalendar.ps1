@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Exports Outlook Desktop calendar entries to a JSON file for syncing to another calendar.
 

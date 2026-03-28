@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Uploads calendar changes to the Sink API for Google Calendar sync processing.
 

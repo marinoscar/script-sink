@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Detects changes in the Outlook calendar export by comparing against the previous run.
 

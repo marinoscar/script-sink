@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Diagnostic script to test Outlook Desktop COM access and extract today's calendar entries.
 
