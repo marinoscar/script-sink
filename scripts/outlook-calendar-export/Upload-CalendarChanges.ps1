@@ -68,7 +68,7 @@ param(
     [string]$ConfigPath
 )
 
-$scriptVersion = "1.1.0"
+$scriptVersion = "1.2.0"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
@@ -273,16 +273,31 @@ try {
 # ==================================================
 # Transform payload for API format
 # ==================================================
-Write-Log "Transforming payload to API format (merging new + modified into entries)..."
+# The changes file uses: detectedAt, changes[] with { changeType, entry }
+# The API expects:       exportDate, rangeStart, rangeEnd, itemCount, entries[]
+Write-Log "Transforming payload to API format..."
 
+# Extract non-deleted entries from the changes array, unwrapping the .entry wrapper
 $entriesList = @()
-if ($changesData.new) { $entriesList += @($changesData.new) }
-if ($changesData.modified) { $entriesList += @($changesData.modified) }
+if ($changesData.changes) {
+    $entriesList = @($changesData.changes |
+        Where-Object { $_.changeType -ne 'deleted' } |
+        ForEach-Object { $_.entry })
+}
+
+# Derive rangeStart/rangeEnd from the earliest and latest entry start dates
+$rangeStart = ""
+$rangeEnd   = ""
+if ($entriesList.Count -gt 0) {
+    $sorted = $entriesList | Sort-Object { [datetime]$_.start }
+    $rangeStart = ([datetime]$sorted[0].start).ToString("yyyy-MM-dd")
+    $rangeEnd   = ([datetime]$sorted[-1].start).ToString("yyyy-MM-dd")
+}
 
 $apiPayloadObj = [PSCustomObject]@{
-    exportDate = $changesData.exportDate
-    rangeStart = $changesData.rangeStart
-    rangeEnd   = $changesData.rangeEnd
+    exportDate = if ($changesData.detectedAt) { $changesData.detectedAt } else { (Get-Date).ToUniversalTime().ToString("o") }
+    rangeStart = $rangeStart
+    rangeEnd   = $rangeEnd
     itemCount  = $entriesList.Count
     entries    = $entriesList
 }
@@ -290,7 +305,7 @@ $apiPayloadObj = [PSCustomObject]@{
 $apiPayload = $apiPayloadObj | ConvertTo-Json -Depth 20 -Compress
 $payloadSizeKB = [math]::Round($apiPayload.Length / 1KB, 1)
 
-Write-Log ('API payload built: {0} entries ({1} new + {2} modified), {3} KB' -f $entriesList.Count, $newCount, $modifiedCount, $payloadSizeKB) -Level Success
+Write-Log ('API payload built: {0} entries, range {1} to {2}, {3} KB' -f $entriesList.Count, $rangeStart, $rangeEnd, $payloadSizeKB) -Level Success
 
 # ==================================================
 # Step 2: Check if upload is needed
