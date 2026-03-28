@@ -24,8 +24,10 @@
 # --------------------------------------------------
 # Setup
 # --------------------------------------------------
+$scriptVersion = "1.0.0"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+Write-Host "Test-OutlookAccess v$scriptVersion" -ForegroundColor Cyan
 $outputDir = Join-Path $scriptDir "output"
 $outputFile = Join-Path $outputDir "test-calendar.csv"
 

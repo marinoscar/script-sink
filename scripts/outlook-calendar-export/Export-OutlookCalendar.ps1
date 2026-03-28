@@ -67,9 +67,11 @@ param(
     [string]$CompanyDomain
 )
 
+$scriptVersion = "1.0.0"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
+Write-Host "Export-OutlookCalendar v$scriptVersion" -ForegroundColor Cyan
 
 # ==================================================
 # Built-in defaults
@@ -222,6 +224,7 @@ if (-not (Test-Path $finalLogPath)) {
 $logFileName = "export-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 $script:logFile = Join-Path $finalLogPath $logFileName
 Write-Log "Log file initialized: $($script:logFile)"
+Write-Log "Script version: $scriptVersion"
 
 # Ensure output directory exists
 $outputDir = Split-Path -Parent $finalOutputPath
