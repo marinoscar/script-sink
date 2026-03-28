@@ -68,7 +68,7 @@ param(
     [string]$ConfigPath
 )
 
-$scriptVersion = "1.0.1"
+$scriptVersion = "1.1.0"
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $startTime = Get-Date
@@ -257,9 +257,8 @@ try {
     $unchangedCount = [int]$changesData.summary.unchanged
     $isFullRun = [bool]$changesData.isFullRun
     $totalChanges = $newCount + $modifiedCount + $deletedCount
-    $payloadSizeKB = [math]::Round($changesRaw.Length / 1KB, 1)
 
-    Write-Log ('Changes file loaded ({0} KB).' -f $payloadSizeKB) -Level Success
+    Write-Log 'Changes file loaded.' -Level Success
     Write-Log "  Full run:    $isFullRun"
     Write-Log "  New:         $newCount"
     Write-Log "  Modified:    $modifiedCount"
@@ -270,6 +269,28 @@ try {
     Write-Log "FATAL: Failed to parse changes file: $($_.Exception.Message)" -Level Error
     exit 1
 }
+
+# ==================================================
+# Transform payload for API format
+# ==================================================
+Write-Log "Transforming payload to API format (merging new + modified into entries)..."
+
+$entriesList = @()
+if ($changesData.new) { $entriesList += @($changesData.new) }
+if ($changesData.modified) { $entriesList += @($changesData.modified) }
+
+$apiPayloadObj = [PSCustomObject]@{
+    exportDate = $changesData.exportDate
+    rangeStart = $changesData.rangeStart
+    rangeEnd   = $changesData.rangeEnd
+    itemCount  = $entriesList.Count
+    entries    = $entriesList
+}
+
+$apiPayload = $apiPayloadObj | ConvertTo-Json -Depth 20 -Compress
+$payloadSizeKB = [math]::Round($apiPayload.Length / 1KB, 1)
+
+Write-Log ('API payload built: {0} entries ({1} new + {2} modified), {3} KB' -f $entriesList.Count, $newCount, $modifiedCount, $payloadSizeKB) -Level Success
 
 # ==================================================
 # Step 2: Check if upload is needed
@@ -307,7 +328,7 @@ if ($totalChanges -eq 0) {
     }
 
     try {
-        $response = Invoke-WebRequest -Uri $finalEndpoint -Method POST -Headers $headers -Body $changesRaw -UseBasicParsing
+        $response = Invoke-WebRequest -Uri $finalEndpoint -Method POST -Headers $headers -Body $apiPayload -UseBasicParsing
 
         $httpStatus = $response.StatusCode
         Write-Log "HTTP $httpStatus received." -Level Success
